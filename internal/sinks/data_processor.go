@@ -74,7 +74,15 @@ func (dp *DataProcessor) Stop() error {
 	dp.cancel()        // Hủy context, báo hiệu cho các hoạt động con (như flush) nên dừng lại.
 	close(dp.stopChan) // Gửi tín hiệu dừng cho workerLoop.
 	dp.wg.Wait()       // Chờ workerLoop xả nốt dữ liệu và kết thúc.
-	return dp.Executor.Close()
+
+	// [Pattern: Graceful Shutdown] Xả nốt các túi sự kiện còn trong kênh để tránh rò rỉ bộ nhớ.
+	// Điều này đặc biệt quan trọng nếu có kịch bản hot-restart một sink.
+	close(dp.EventChan) // Đóng kênh để vòng lặp for..range bên dưới có thể kết thúc.
+	for sharedBag := range dp.EventChan {
+		sharedBag.Done() // Gọi Done() để giảm refCount và có thể trả bag về pool.
+	}
+
+	return dp.Executor.Close() // Cuối cùng, đóng kết nối vật lý.
 }
 
 // IsActive trả về trạng thái hoạt động của DataProcessor.

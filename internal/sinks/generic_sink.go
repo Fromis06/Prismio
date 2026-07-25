@@ -31,6 +31,14 @@ func (m *MultiSink) Start() error {
 	return nil
 }
 
+// Stop dừng tất cả các pipeline con một cách an toàn.
+func (m *MultiSink) Stop() error {
+	for _, p := range m.pipelines {
+		_ = p.Stop() // Bỏ qua lỗi của một pipeline để đảm bảo các pipeline khác vẫn được dừng.
+	}
+	return nil
+}
+
 // WriteBatch gửi một túi sự kiện đến tất cả các pipeline con đã đăng ký.
 // Nó sử dụng cơ chế đếm tham chiếu (reference counting) để đảm bảo túi sự kiện
 // chỉ được trả về pool sau khi TẤT CẢ các pipeline xử lý xong, tránh data race.
