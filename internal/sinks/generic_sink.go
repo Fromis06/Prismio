@@ -2,10 +2,12 @@ package sinks
 
 import (
 	"log"
+	"my-cdc/internal/models"
 	"my-cdc/internal/pb"
 )
 
 // [Pattern: Broadcast / Pub-Sub] MultiSink sao chép và phát sóng túi sự kiện tới nhiều đích.
+
 type MultiSink struct {
 	pipelines []Pipeline
 }
@@ -30,19 +32,34 @@ func (m *MultiSink) Start() error {
 }
 
 // WriteBatch gửi một túi sự kiện đến tất cả các pipeline con đã đăng ký.
+// Nó sử dụng cơ chế đếm tham chiếu (reference counting) để đảm bảo túi sự kiện
+// chỉ được trả về pool sau khi TẤT CẢ các pipeline xử lý xong, tránh data race.
 func (m *MultiSink) WriteBatch(events []*pb.ChangeEvent) error {
-	for _, p := range m.pipelines {
-		// Lỗi từ một pipeline không nên chặn các pipeline khác.
-		_ = p.WriteBatch(events)
+	if len(events) == 0 {
+		return nil
 	}
-	return nil
-}
 
-// Stop dừng tất cả các pipeline con một cách an toàn.
-func (m *MultiSink) Stop() error {
+	// 1. Lọc ra các pipeline đang hoạt động để xác định số lượng tham chiếu.
+	activePipelines := make([]Pipeline, 0, len(m.pipelines))
 	for _, p := range m.pipelines {
-		// Lỗi từ một pipeline không nên chặn các pipeline khác.
-		_ = p.Stop()
+		if p.IsActive() {
+			activePipelines = append(activePipelines, p)
+		}
 	}
+
+	// 2. Nếu không có pipeline nào hoạt động, MultiSink chịu trách nhiệm trả lại túi vào pool.
+	if len(activePipelines) == 0 {
+		models.ChangeEventBagPool.Put(events[:0])
+		return nil
+	}
+
+	// 3. Tạo một túi sự kiện được chia sẻ với bộ đếm tham chiếu bằng số pipeline đang hoạt động.
+	sharedBag := models.NewSharedEventBag(events, int32(len(activePipelines)))
+
+	// 4. Gửi túi được chia sẻ đến từng pipeline đang hoạt động.
+	for _, p := range activePipelines {
+		p.WriteShared(sharedBag)
+	}
+
 	return nil
 }

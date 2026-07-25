@@ -2,6 +2,7 @@ package sinks
 
 import (
 	"context"
+	"my-cdc/internal/models"
 	"my-cdc/internal/pb"
 )
 
@@ -25,6 +26,8 @@ type DatabaseExecutor interface {
 // Nó bao gồm việc nhận dữ liệu, xử lý và ghi xuống đích.
 type Pipeline interface {
 	Start() error                              // Khởi động pipeline (VD: chạy các worker goroutine).
-	WriteBatch(events []*pb.ChangeEvent) error // Nhận một "túi" sự kiện để xử lý.
+	WriteBatch(events []*pb.ChangeEvent) error // Nhận một "túi" sự kiện (dùng cho kịch bản 1-1).
+	WriteShared(bag *models.SharedEventBag)    // Nhận một "túi" sự kiện đã được chia sẻ (dùng cho kịch bản 1-nhiều).
 	Stop() error                               // Dừng pipeline một cách an toàn (graceful shutdown).
+	IsActive() bool                            // Kiểm tra xem pipeline có còn hoạt động không.
 }

@@ -15,37 +15,52 @@ import (
 
 // DataProcessor quản lý toàn bộ luồng xử lý dữ liệu cho một đích (destination) cụ thể.
 type DataProcessor struct {
-	Name        string                 // Tên định danh của Sink.
-	Config      *config.AppConfig      // Cấu hình của ứng dụng.
-	Builder     QueryBuilder           // Khối chuyển đổi ChangeEvent sang SQL.
-	Executor    DatabaseExecutor       // Khối thực thi lệnh SQL.
-	EventChan   chan []*pb.ChangeEvent // Kênh giao tiếp nhận túi sự kiện.
-	stopChan    chan struct{}          // Kênh tín hiệu yêu cầu dừng.
-	GlobalState *models.GlobalState    // Tham chiếu state tổng để báo cáo Checkpoint.
-	wg          sync.WaitGroup         // Khóa chờ worker kết thúc trước khi tắt.
-	isActive    atomic.Bool            // Trạng thái sống/chết của Sink.
+	Name        string                      // Tên định danh của Sink.
+	Config      *config.AppConfig           // Cấu hình của ứng dụng.
+	Builder     QueryBuilder                // Khối chuyển đổi ChangeEvent sang SQL.
+	Executor    DatabaseExecutor            // Khối thực thi lệnh SQL.
+	EventChan   chan *models.SharedEventBag // Kênh giao tiếp nhận túi sự kiện được đóng gói.
+	stopChan    chan struct{}               // Kênh tín hiệu yêu cầu dừng.
+	ctx         context.Context             // Context chính của processor, bị hủy khi Stop().
+	cancel      context.CancelFunc          // Hàm để hủy context trên.
+	GlobalState *models.GlobalState         // Tham chiếu state tổng để báo cáo Checkpoint.
+	wg          sync.WaitGroup              // Khóa chờ worker kết thúc trước khi tắt.
+	isActive    atomic.Bool                 // Trạng thái sống/chết của Sink.
 }
 
 func NewDataProcessor(name string, cfg *config.AppConfig, builder QueryBuilder, executor DatabaseExecutor, globalState *models.GlobalState) *DataProcessor {
+	ctx, cancel := context.WithCancel(context.Background())
 	dp := &DataProcessor{
 		Name:        name,
 		Config:      cfg,
 		Builder:     builder,
 		Executor:    executor,
-		EventChan:   make(chan []*pb.ChangeEvent, 1000),
+		EventChan:   make(chan *models.SharedEventBag, 1000),
 		stopChan:    make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
 		GlobalState: globalState,
 	}
 	dp.isActive.Store(true)
 	return dp
 }
 
-// WriteBatch nhận một túi sự kiện và gửi nó vào kênh để worker xử lý.
+// WriteBatch là phương thức của interface Pipeline. Nó được dùng trong kịch bản
+// một-một (1 producer -> 1 consumer). Nó sẽ tự đóng gói túi sự kiện với
+// bộ đếm tham chiếu là 1 và gửi vào kênh xử lý.
 func (dp *DataProcessor) WriteBatch(events []*pb.ChangeEvent) error {
 	if len(events) > 0 {
-		dp.EventChan <- events
+		// Tự đóng gói với bộ đếm là 1, vì đây là consumer duy nhất.
+		dp.WriteShared(models.NewSharedEventBag(events, 1))
 	}
 	return nil
+}
+
+// WriteShared là phương thức được gọi bởi MultiSink để gửi một túi sự kiện
+// đã được đóng gói (với bộ đếm tham chiếu) vào kênh xử lý.
+func (dp *DataProcessor) WriteShared(bag *models.SharedEventBag) { // Implements Pipeline interface
+	// Không cần kiểm tra len, vì MultiSink đã làm.
+	dp.EventChan <- bag
 }
 
 // Start khởi động goroutine xử lý chính (workerLoop).
@@ -56,9 +71,15 @@ func (dp *DataProcessor) Start() error {
 }
 
 func (dp *DataProcessor) Stop() error {
+	dp.cancel()        // Hủy context, báo hiệu cho các hoạt động con (như flush) nên dừng lại.
 	close(dp.stopChan) // Gửi tín hiệu dừng cho workerLoop.
 	dp.wg.Wait()       // Chờ workerLoop xả nốt dữ liệu và kết thúc.
 	return dp.Executor.Close()
+}
+
+// IsActive trả về trạng thái hoạt động của DataProcessor.
+func (dp *DataProcessor) IsActive() bool { // Implements Pipeline interface
+	return dp.isActive.Load()
 }
 
 // [Pattern: Worker Loop & Batching] workerLoop thực hiện xử lý sự kiện liên tục và gom lô.
@@ -87,15 +108,18 @@ func (dp *DataProcessor) workerLoop() {
 			return
 		}
 		log.Printf("SINK: Bắt đầu ghi %d câu lệnh xuống đích (Lý do: %s)", len(currentQueries), reason)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
+		// Sử dụng context của processor (dp.ctx) làm parent.
+		// Điều này đảm bảo nếu Stop() được gọi, context này sẽ bị hủy,
+		// giúp ngắt các lệnh ExecuteBatch đang chạy hoặc đang chờ retry.
+		execCtx, execCancel := context.WithTimeout(dp.ctx, 2*time.Minute)
+		defer execCancel()
 
 		err := utils.DoWithRetry(
 			dp.Config.Retry.MaxRetries,
 			time.Duration(dp.Config.Retry.BaseDelayMs)*time.Millisecond,
 			time.Duration(dp.Config.Retry.MaxDelayTimeMs)*time.Millisecond,
 			func() error {
-				return dp.Executor.ExecuteBatch(ctx, currentQueries, currentArgs)
+				return dp.Executor.ExecuteBatch(execCtx, currentQueries, currentArgs)
 			},
 		)
 		if err != nil {
@@ -124,12 +148,15 @@ func (dp *DataProcessor) workerLoop() {
 			}
 			return
 
-		case eventsBuffer := <-dp.EventChan:
-			// Nếu sink đã chết, vứt bỏ sự kiện để không làm đầy buffer (tránh block luồng Capture)
+		case sharedBag := <-dp.EventChan:
+			// Nếu sink đã chết, vứt bỏ sự kiện và báo cho bộ đếm biết là đã "xong"
+			// để không block các sink khác và không làm rò rỉ bộ nhớ.
 			if !dp.isActive.Load() {
-				models.ChangeEventBagPool.Put(eventsBuffer[:0])
+				sharedBag.Done()
 				continue
 			}
+
+			eventsBuffer := sharedBag.Events
 
 			activeMaxSize := dp.Config.Batch.BatchMaxSize.Load()
 			numWorkers := int(dp.Config.DataProcessing.DataProcessingWorkerCount.Load())
@@ -199,8 +226,8 @@ func (dp *DataProcessor) workerLoop() {
 				ticker.Reset(time.Duration(dp.Config.Batch.BatchTimeout.Load()) * time.Millisecond)
 			}
 
-			// Sau khi xử lý xong, trả túi sự kiện về pool để tái sử dụng.
-			models.ChangeEventBagPool.Put(eventsBuffer[:0])
+			// Báo cho bộ đếm tham chiếu biết là worker này đã xử lý xong.
+			sharedBag.Done()
 
 		case <-ticker.C:
 			if dp.isActive.Load() {

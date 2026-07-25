@@ -75,7 +75,6 @@ type BatchConfig struct {
 // StateStorageConfig cấu hình nơi lưu trữ trạng thái (checkpoint).
 type StateStorageConfig struct {
 	StorageType string `json:"storage_type"` // Loại lưu trữ: "file" hoặc "postgres" (chưa hỗ trợ).
-	Path        string `json:"path"`         // Đường dẫn tới file hoặc bảng lưu checkpoint.
 }
 
 // FilterConfig cho phép lọc các bảng muốn hoặc không muốn theo dõi.
@@ -121,7 +120,7 @@ func NewDefaultConfig() *AppConfig {
 
 	// --- Cấu hình kết nối mặc định ---
 	// Thêm tham số slot_name vào cuối URL
-cfg.Provider.Source.URL = "postgres://postgres:password@192.168.137.89:5420/postgres?sslmode=disable&replication=database&slot_name=cdc_test_slot&publication_names=cdc_pub"
+	cfg.Provider.Source.URL = "postgres://postgres:password@192.168.137.89:5420/postgres?sslmode=disable&replication=database&slot_name=cdc_test_slot&publication_names=cdc_pub"
 	cfg.Provider.Source.Name = "postgres_source_native"
 	cfg.Provider.Source.Type = "postgres"
 	cfg.Consumers.List = []DBConnection{
@@ -153,7 +152,6 @@ cfg.Provider.Source.URL = "postgres://postgres:password@192.168.137.89:5420/post
 	cfg.Retry.BaseDelayMs = 2000
 	cfg.Retry.MaxDelayTimeMs = 30000
 	cfg.State.StorageType = "file"
-	cfg.State.Path = "./checkpoint.sn" // Ghi chú: Path này có vẻ không được dùng, thay vào đó là SaveDestination.
 	cfg.Monitor.HttpPort = 8080
 
 	// --- Cấu hình lưu trữ checkpoint ---
