@@ -3,7 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -108,7 +108,7 @@ func LoadProviderCheckpoint(dest config.CheckpointSaveDestination, sourceType pb
 		if err := unmarshalOpts.Unmarshal(dto.CheckpointData, cpData); err != nil {
 			// Nếu vẫn lỗi, file có thể đã bị hỏng. Ghi log và coi như không có checkpoint.
 			// Việc trả về (nil, nil) sẽ khiến app hoạt động như lần chạy đầu tiên.
-			log.Printf("CHECKPOINT: Cảnh báo - Không thể giải mã dữ liệu checkpoint trong file '%s', sẽ bỏ qua. Lỗi: %v", fullPath, err)
+			slog.Warn("Failed to unmarshal checkpoint data, skipping", "file", fullPath, "error", err)
 			return nil, nil
 		}
 	}

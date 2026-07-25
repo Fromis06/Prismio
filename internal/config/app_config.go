@@ -64,8 +64,9 @@ type DataProcessingWorkerConfig struct {
 
 // BatchConfig cấu hình cho việc gom lô (batching) trước khi ghi vào đích.
 type BatchConfig struct {
-	BatchMaxSize atomic.Int64 // Số lượng câu lệnh SQL tối đa trong một lô.
-	BatchTimeout atomic.Int64 // Thời gian (mili giây) chờ tối đa trước khi xả lô, dù chưa đầy.
+	BatchMaxSize   atomic.Int64 // Số lượng câu lệnh SQL tối đa trong một lô.
+	BatchTimeout   atomic.Int64 // Thời gian (mili giây) chờ tối đa trước khi xả lô, dù chưa đầy.
+	FlushTimeoutMs atomic.Int64 // Thời gian (mili giây) timeout cho một thao tác ghi (flush) xuống DB.
 }
 
 // ==============================================================================
@@ -146,6 +147,7 @@ func NewDefaultConfig() *AppConfig {
 	cfg.DataProcessing.DataProcessingWorkerCount.Store(10)
 	cfg.Batch.BatchMaxSize.Store(10000)
 	cfg.Batch.BatchTimeout.Store(1000)
+	cfg.Batch.FlushTimeoutMs.Store(120000) // 2 phút
 
 	// --- Cấu hình độ tin cậy & giám sát mặc định ---
 	cfg.Retry.MaxRetries = 3

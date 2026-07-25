@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"log/slog"
 	"my-cdc/internal/config"
 	"my-cdc/internal/models"
 	"my-cdc/internal/sinks"
@@ -36,6 +37,7 @@ func NewProcessor(cfg *config.AppConfig, targetSink sinks.Pipeline, counts *mode
 func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 	logicalMsg, err := pglogrepl.Parse(walData)
 	if err != nil {
+		slog.Warn("Không thể phân tích thông điệp WAL", "error", err)
 		return
 	}
 
@@ -69,6 +71,7 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 		rel, ok := p.relations[relID]
 		if !ok {
 			// Nếu chưa có thông tin về bảng này trong cache, ta không thể xử lý. Bỏ qua.
+			slog.Warn("Không tìm thấy thông tin metadata cho bảng, bỏ qua sự kiện", "relation_id", relID)
 			return
 		}
 

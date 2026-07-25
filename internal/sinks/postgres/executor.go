@@ -2,7 +2,7 @@ package postgres
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +15,7 @@ type Executor struct {
 
 // Init mở kết nối bằng connection pool thay vì 1 connection đơn lẻ
 func (pe *Executor) Init(ctx context.Context, url string) error {
-	log.Println("SINK (Postgres): Đang khởi tạo connection pool...")
+	slog.Info("SINK (Postgres): Đang khởi tạo connection pool")
 	var err error
 
 	// Phân tích chuỗi URL để có thể tùy chỉnh thêm cấu hình pool nếu cần.
@@ -34,7 +34,7 @@ func (pe *Executor) Init(ctx context.Context, url string) error {
 		return err
 	}
 
-	log.Println("SINK (Postgres): Connection pool đã sẵn sàng.")
+	slog.Info("SINK (Postgres): Connection pool đã sẵn sàng")
 	return nil
 }
 
@@ -55,8 +55,7 @@ func (pe *Executor) ExecuteBatch(ctx context.Context, queries []string, argsList
 	for i := 0; i < len(queries); i++ {
 		if _, err := br.Exec(); err != nil {
 			// Ghi log chi tiết về câu lệnh gây lỗi để dễ dàng debug.
-			log.Printf("SINK (Postgres): Lỗi khi thực thi câu lệnh thứ %d trong batch. Lỗi: %v", i+1, err)
-			return err
+			return err // Lỗi đã được ghi trong DataProcessor, ở đây chỉ cần trả về
 		}
 	}
 
@@ -66,7 +65,7 @@ func (pe *Executor) ExecuteBatch(ctx context.Context, queries []string, argsList
 // Close dọn dẹp tài nguyên khi hệ thống tắt
 func (pe *Executor) Close() error {
 	if pe.Pool != nil {
-		log.Println("SINK (Postgres): Đang đóng connection pool...")
+		slog.Info("SINK (Postgres): Đang đóng connection pool")
 		pe.Pool.Close()
 	}
 	return nil

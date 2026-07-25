@@ -1,7 +1,7 @@
 package sinks
 
 import (
-	"log"
+	"log/slog"
 	"my-cdc/internal/models"
 	"my-cdc/internal/pb"
 )
@@ -25,7 +25,7 @@ func (m *MultiSink) AddPipeline(p Pipeline) {
 func (m *MultiSink) Start() error {
 	for _, p := range m.pipelines {
 		if err := p.Start(); err != nil {
-			log.Printf("SINK: Lỗi khi khởi động pipeline con: %v", err)
+			slog.Warn("Failed to start child pipeline", "error", err)
 		}
 	}
 	return nil
@@ -37,6 +37,26 @@ func (m *MultiSink) Stop() error {
 		_ = p.Stop() // Bỏ qua lỗi của một pipeline để đảm bảo các pipeline khác vẫn được dừng.
 	}
 	return nil
+}
+
+// IsActive checks if at least one of its child pipelines is active.
+// A MultiSink is considered active if it has at least one active destination.
+func (m *MultiSink) IsActive() bool {
+	for _, p := range m.pipelines {
+		if p.IsActive() {
+			return true
+		}
+	}
+	return false
+}
+
+// WriteShared implements the Pipeline interface. This method is not expected to be
+// called on a MultiSink, as the primary entry point is WriteBatch. Calling it
+// indicates a potential logic error in the pipeline's construction.
+func (m *MultiSink) WriteShared(bag *models.SharedEventBag) {
+	// We must call Done() to prevent the bag from leaking.
+	bag.Done()
+	slog.Error("MultiSink.WriteShared was called, which is not an expected workflow. The event bag was dropped to prevent data races.")
 }
 
 // WriteBatch gửi một túi sự kiện đến tất cả các pipeline con đã đăng ký.

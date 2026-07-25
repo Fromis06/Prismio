@@ -2,15 +2,16 @@ package postgres
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"my-cdc/internal/config"
 	"my-cdc/internal/models"
+	"my-cdc/internal/pb"
 	"my-cdc/internal/sinks"
 	"my-cdc/internal/utils"
-	"my-cdc/internal/pb"
 
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -30,16 +31,31 @@ func NewListener(cfg *config.AppConfig, targetSink sinks.Pipeline, counts *model
 }
 
 func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *models.GlobalState) error {
-	log.Println("CAPTURE: Đang kết nối đến database nguồn...")
+	slog.Info("CAPTURE: Đang kết nối đến database nguồn...")
+
+	connConfig, err := pgconn.ParseConfig(sourceURL)
+	if err != nil {
+		return fmt.Errorf("không thể phân tích URL của nguồn: %w", err)
+	}
+
+	slotName := connConfig.RuntimeParams["slot_name"]
+	if slotName == "" {
+		return fmt.Errorf("replication slot_name không được chỉ định trong URL nguồn")
+	}
+
+	publicationNames := connConfig.RuntimeParams["publication_names"]
+	if publicationNames == "" {
+		return fmt.Errorf("publication_names không được chỉ định trong URL nguồn")
+	}
 
 	var conn *pgconn.PgConn
-	err := utils.DoWithRetry(
+	err = utils.DoWithRetry(
 		l.Config.Retry.MaxRetries,
 		time.Duration(l.Config.Retry.BaseDelayMs)*time.Millisecond,
 		time.Duration(l.Config.Retry.MaxDelayTimeMs)*time.Millisecond,
 		func() error {
 			var connErr error
-			conn, connErr = pgconn.Connect(ctx, sourceURL)
+			conn, connErr = pgconn.ConnectConfig(ctx, connConfig)
 			return connErr
 		},
 	)
@@ -52,9 +68,8 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 	if err != nil {
 		return err
 	}
-	log.Printf("CAPTURE: Kết nối thành công. System LSN hiện tại: %s", sysident.XLogPos)
+	slog.Info("CAPTURE: Kết nối thành công", "system_lsn", sysident.XLogPos.String())
 
-	slotName := "cdc_test_slot"
 	_, err = pglogrepl.CreateReplicationSlot(ctx, conn, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{
 		Mode: pglogrepl.LogicalReplication,
 	})
@@ -65,17 +80,21 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 	// Lấy mốc Checkpoint đã load từ đĩa (nếu có) để yêu cầu Postgres bắt đầu từ chính xác điểm này
 	startLSN := globalState.GetMinCheckpoint()
 	if startLSN > 0 {
-		log.Printf("CAPTURE: Yêu cầu Postgres bắt đầu gửi dữ liệu từ LSN %d", startLSN)
+		slog.Info("CAPTURE: Yêu cầu Postgres bắt đầu gửi dữ liệu từ LSN", "lsn", startLSN)
 	}
 
+	pluginArgs := []string{
+		"proto_version '1'",
+		fmt.Sprintf("publication_names '%s'", publicationNames),
+	}
 	err = pglogrepl.StartReplication(ctx, conn, slotName, pglogrepl.LSN(startLSN), pglogrepl.StartReplicationOptions{
-		PluginArgs: []string{"proto_version '1'", "publication_names 'cdc_pub'"},
+		PluginArgs: pluginArgs,
 	})
 	if err != nil {
 		return err
 	}
 
-	log.Println("CAPTURE: Bắt đầu lắng nghe các thay đổi từ PostgreSQL...")
+	slog.Info("CAPTURE: Bắt đầu lắng nghe các thay đổi từ PostgreSQL...")
 
 	feedbackInterval := time.Duration(l.Config.Capture.FeedbackInterval.Load()) * time.Second
 	ticker := time.NewTicker(feedbackInterval)
@@ -110,10 +129,10 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					}
 					errSave := utils.SaveProviderCheckpoint(l.Config.SaveDestination, ckptData)
 					if errSave != nil {
-						log.Printf("CAPTURE: Cảnh báo - Lỗi lưu checkpoint định kỳ xuống đĩa: %v", errSave)
+						slog.Warn("CAPTURE: Lỗi lưu checkpoint định kỳ xuống đĩa", "error", errSave)
 					}
 				} else {
-					log.Printf("CAPTURE: Cảnh báo - Lỗi gửi StandbyStatusUpdate: %v", errUpdate)
+					slog.Warn("CAPTURE: Lỗi gửi StandbyStatusUpdate", "error", errUpdate)
 				}
 			}
 		default:

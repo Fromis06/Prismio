@@ -2,7 +2,7 @@ package sinks
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +35,7 @@ func NewDataProcessor(name string, cfg *config.AppConfig, builder QueryBuilder, 
 		Config:      cfg,
 		Builder:     builder,
 		Executor:    executor,
-		EventChan:   make(chan *models.SharedEventBag, 1000),
+		EventChan:   make(chan *models.SharedEventBag, cfg.Pipeline.PipelineMaxSize.Load()),
 		stopChan:    make(chan struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
@@ -115,11 +115,17 @@ func (dp *DataProcessor) workerLoop() {
 			}
 			return
 		}
-		log.Printf("SINK: Bắt đầu ghi %d câu lệnh xuống đích (Lý do: %s)", len(currentQueries), reason)
+		slog.Info("Flushing batch to destination",
+			"sink", dp.Name,
+			"reason", reason,
+			"query_count", len(currentQueries),
+			"checkpoint_lsn", CurrentLastCheckpoint,
+		)
 		// Sử dụng context của processor (dp.ctx) làm parent.
 		// Điều này đảm bảo nếu Stop() được gọi, context này sẽ bị hủy,
 		// giúp ngắt các lệnh ExecuteBatch đang chạy hoặc đang chờ retry.
-		execCtx, execCancel := context.WithTimeout(dp.ctx, 2*time.Minute)
+		flushTimeout := time.Duration(dp.Config.Batch.FlushTimeoutMs.Load()) * time.Millisecond
+		execCtx, execCancel := context.WithTimeout(dp.ctx, flushTimeout)
 		defer execCancel()
 
 		err := utils.DoWithRetry(
@@ -132,7 +138,7 @@ func (dp *DataProcessor) workerLoop() {
 		)
 		if err != nil {
 			// [Pattern: Graceful Degradation] Ngắt bỏ kết nối lỗi thay vì panic để bảo vệ các đích khác.
-			log.Printf("SINK [%s]: Ngắt kết nối do lỗi nghiêm trọng: %v", dp.Name, err)
+			slog.Error("Disconnecting sink due to critical error", "sink", dp.Name, "error", err)
 			dp.isActive.Store(false)
 			dp.GlobalState.RemoveSink(dp.Name)
 		} else {

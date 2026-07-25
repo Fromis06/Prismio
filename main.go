@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"my-cdc/internal/app"
+	"my-cdc/internal/logger"
 	"my-cdc/internal/utils"
 
 	// Đăng ký các Driver (Provider và Consumer)
@@ -18,7 +19,8 @@ import (
 )
 
 func main() {
-	log.Println("SYSTEM: Khởi động ứng dụng CDC...")
+	logger.Initialize()
+	slog.Info("System starting up")
 
 	// Tạo context chính cho toàn bộ ứng dụng, cho phép hủy đồng loạt
 	ctx, cancel := context.WithCancel(context.Background())
@@ -45,7 +47,7 @@ func main() {
 	go func() {
 		// Bắt đầu lắng nghe thay đổi từ DB nguồn. Đây là một lời gọi blocking.
 		if err := cdcApp.Listener.Start(ctx, cdcApp.Config.Provider.Source.URL, cdcApp.GlobalState); err != nil && err != context.Canceled {
-			log.Printf("CAPTURE: Luồng capture bị ngắt đột ngột: %v", err)
+			slog.Error("Capture stream unexpectedly interrupted", "error", err)
 			// Nếu listener gặp lỗi nghiêm trọng, tự gửi tín hiệu để shutdown chương trình
 			sigChan <- syscall.SIGINT
 		}
@@ -54,11 +56,11 @@ func main() {
 	// [Pattern: Graceful Shutdown] Chặn luồng main để chờ tín hiệu hệ điều hành trước khi dọn dẹp.
 	<-sigChan // Block chương trình chính tại đây cho đến khi có tín hiệu
 
-	log.Println("SYSTEM: Nhận tín hiệu dừng, bắt đầu quá trình shutdown...")
+	slog.Info("Received stop signal, starting shutdown process")
 	cancel() // Gửi tín hiệu dừng cho các goroutine con đang lắng nghe context
 
 	// Gọi hàm xả dữ liệu và lưu checkpoint
 	cdcApp.Shutdown()
 
-	log.Println("SYSTEM: Shutdown hoàn tất. Hẹn gặp lại!")
+	slog.Info("Shutdown complete. Goodbye!")
 }
