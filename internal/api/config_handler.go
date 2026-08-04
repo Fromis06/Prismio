@@ -1,13 +1,13 @@
-package utils
+package api
 
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
-	"encoding/hex"
 
 	"my-cdc/internal/config"
 )
@@ -117,8 +117,8 @@ func (h *ConfigHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// hashAPIKey băm chuỗi API Key bằng SHA-256 và trả về dạng hex string.
-func hashAPIKey(key string) string {
+// HashAPIKey băm chuỗi API Key bằng SHA-256 và trả về dạng hex string.
+func HashAPIKey(key string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	return hex.EncodeToString(hasher.Sum(nil))

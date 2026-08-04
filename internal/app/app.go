@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 	"time"
-
+	"my-cdc/internal/utils"
 	"my-cdc/internal/capture"
 	"my-cdc/internal/config"
 	"my-cdc/internal/models"
