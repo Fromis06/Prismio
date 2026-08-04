@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"my-cdc/internal/app"
+	"my-cdc/internal/config"
 	"my-cdc/internal/logger"
 	"my-cdc/internal/utils"
 
@@ -25,7 +26,12 @@ func Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cdcApp := app.Initialize(ctx)
+	cfg := config.NewDefaultConfig()
+	cdcApp, err := app.Bootstrap(ctx, cfg)
+	if err != nil {
+		slog.Error("Failed to bootstrap application", "error", err)
+		os.Exit(1)
+	}
 
 	cdcApp.MultiSink.Start()
 	defer cdcApp.MultiSink.Stop()
@@ -37,7 +43,7 @@ func Run() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		if err := cdcApp.Listener.Start(ctx, cdcApp.Config.Provider.Source.URL, cdcApp.GlobalState); err != nil && err != context.Canceled {
+		if err := cdcApp.Listener.Start(ctx, cdcApp.Config.Provider.Source.URL, cdcApp.GlobalState); err != nil && err != context.Canceled { // No changes needed here, as it uses cdcApp.Config which is already updated
 			slog.Error("Capture stream unexpectedly interrupted", "error", err)
 			sigChan <- syscall.SIGINT
 		}

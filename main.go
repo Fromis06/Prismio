@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 
@@ -9,27 +10,23 @@ import (
 )
 
 func main() {
+	// Sử dụng flag để chọn chế độ chạy, thân thiện hơn với môi trường server/script.
+	// Mặc định là "server".
+	mode := flag.String("mode", "server", "Chế độ chạy ứng dụng: 'server' (headless) hoặc 'cli' (giao diện terminal).")
+	flag.Parse()
+
 	fmt.Println("=====================================")
 	fmt.Println("  Welcome to my-cdc Application")
 	fmt.Println("=====================================")
-	fmt.Println("Please choose a mode to run:")
-	fmt.Println("  1. Interactive Terminal UI")
-	fmt.Println("  2. Headless Server (for Web App or background processing)")
-	fmt.Println("-------------------------------------")
-	fmt.Print("Enter your choice (1 or 2): ")
 
-	var choice int
-	_, err := fmt.Scanln(&choice)
-	if err != nil {
-		log.Fatalf("Invalid input. Please enter a number (1 or 2). Error: %v", err)
-	}
-
-	switch choice {
-	case 1:
+	switch *mode {
+	case "cli":
+		log.Println("Starting in Interactive Terminal UI mode...")
 		cli.Run()
-	case 2:
+	case "server":
+		log.Println("Starting in Headless Server mode...")
 		server.Run()
 	default:
-		log.Fatalf("Invalid choice: %d. Please run again and select 1 or 2.", choice)
+		log.Fatalf("Invalid mode: '%s'. Please use 'server' or 'cli'.", *mode)
 	}
 }

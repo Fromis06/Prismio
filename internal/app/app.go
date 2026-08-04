@@ -2,15 +2,17 @@ package app
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
-	"my-cdc/internal/utils"
+
+	"log/slog"
 	"my-cdc/internal/capture"
 	"my-cdc/internal/config"
 	"my-cdc/internal/models"
 	"my-cdc/internal/pb"
 	"my-cdc/internal/sinks"
 	"my-cdc/internal/tuning"
+	"my-cdc/internal/utils"
 )
 
 // Application chứa tất cả các thành phần cốt lõi của hệ thống CDC.
@@ -24,12 +26,9 @@ type Application struct {
 	AutoTuner   *tuning.AutoTuner
 }
 
-// Initialize khởi tạo tất cả các thành phần (Config, Pool, Checkpoint, Sinks, Listener).
-func Initialize(ctx context.Context) *Application {
-	// 1. Khởi tạo Cấu hình mặc định
-	cfg := config.NewDefaultConfig()
-
-	// Khởi tạo sức chứa cho pool túi sự kiện
+// Bootstrap khởi tạo tất cả các thành phần có side-effect nặng của ứng dụng.
+// Hàm này chỉ nên được gọi sau khi cấu hình đã được xác nhận.
+func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error) {
 	poolCapacity := int(cfg.Bag.BagMaxSize.Load() * int64(cfg.Bag.BagMaxMultiple.Load()))
 	models.InitBagPool(poolCapacity)
 
@@ -39,11 +38,11 @@ func Initialize(ctx context.Context) *Application {
 	sourceType := models.ParseSourceType(cfg.Provider.Source.Type)
 	instanceName := cfg.Provider.Source.Name
 
-	// 2. Phục hồi trạng thái (Load Checkpoint)
-	log.Println("CHECKPOINT: Đang kiểm tra lịch sử...")
+	// 1. Phục hồi trạng thái (Load Checkpoint)
+	slog.Info("CHECKPOINT: Đang kiểm tra lịch sử...")
 	ckptData, err := utils.LoadProviderCheckpoint(cfg.SaveDestination, sourceType, instanceName)
 	if err != nil {
-		log.Fatalf("CHECKPOINT: Lỗi nghiêm trọng khi đọc file checkpoint: %v", err)
+		return nil, fmt.Errorf("lỗi nghiêm trọng khi đọc file checkpoint: %w", err)
 	}
 
 	recoveredLSN := uint64(0)
@@ -51,11 +50,11 @@ func Initialize(ctx context.Context) *Application {
 		if lsn, ok := ckptData.CheckpointData.Offset.(*pb.Checkpoint_Lsn); ok && lsn.Lsn > 0 {
 			recoveredLSN = lsn.Lsn
 			lastSaved := time.Unix(ckptData.UpdatedAt, 0).Format("2006-01-02 15:04:05")
-			log.Printf("CHECKPOINT: Phục hồi thành công LSN %d từ lần lưu lúc %s", recoveredLSN, lastSaved)
+			slog.Info("CHECKPOINT: Phục hồi thành công", "lsn", recoveredLSN, "last_saved", lastSaved)
 		}
 	}
 	if recoveredLSN == 0 {
-		log.Println("CHECKPOINT: Không tìm thấy checkpoint cũ, sẽ bắt đầu từ LSN mới nhất.")
+		slog.Info("CHECKPOINT: Không tìm thấy checkpoint cũ, sẽ bắt đầu từ LSN mới nhất.")
 	}
 
 	// Khởi tạo mốc Checkpoint ban đầu cho TẤT CẢ các đích đang hoạt động
@@ -65,29 +64,29 @@ func Initialize(ctx context.Context) *Application {
 		}
 	}
 
-	// 3. Khởi tạo các Đích (Sinks)
+	// 2. Khởi tạo các Đích (Sinks)
 	multiSink := sinks.NewMultiSink()
 
 	for _, consumer := range cfg.Consumers.List {
 		if !consumer.IsActive {
-			log.Printf("SINK: Bỏ qua đích không hoạt động: %s", consumer.Name)
+			slog.Info("SINK: Bỏ qua đích không hoạt động", "sink_name", consumer.Name)
 			continue
 		}
 
 		// Khởi tạo và cắm pipeline đích dựa vào loại (type)
 		if err := sinks.BuildAndAddPipeline(ctx, consumer.Type, consumer.Name, cfg, consumer.URL, globalState, multiSink); err != nil {
-			log.Fatalf("SINK: Khởi tạo đích [%s] thất bại: %v", consumer.Name, err)
+			return nil, fmt.Errorf("khởi tạo đích [%s] thất bại: %w", consumer.Name, err)
 		}
-		log.Printf("SINK: Đã khởi tạo pipeline cho đích: %s", consumer.Name)
+		slog.Info("SINK: Đã khởi tạo pipeline cho đích", "sink_name", consumer.Name)
 	}
 
-	// 4. Khởi tạo Nguồn (Capture)
+	// 3. Khởi tạo Nguồn (Capture)
 	listener, err := capture.CreateListener(cfg.Provider.Source.Type, cfg, multiSink, eventsCount)
 	if err != nil {
-		log.Fatalf("CAPTURE: Lỗi khởi tạo nguồn: %v", err)
+		return nil, fmt.Errorf("lỗi khởi tạo nguồn: %w", err)
 	}
 
-	// 5. Khởi tạo bộ tự động điều chỉnh (Auto-Tuner)
+	// 4. Khởi tạo bộ tự động điều chỉnh (Auto-Tuner)
 	autoTuner := tuning.NewAutoTuner(cfg, eventsCount)
 
 	return &Application{
@@ -97,7 +96,7 @@ func Initialize(ctx context.Context) *Application {
 		MultiSink:   multiSink,
 		Listener:    listener,
 		AutoTuner:   autoTuner,
-	}
+	}, nil
 }
 
 // Shutdown thực hiện công việc lưu trạng thái (checkpoint) trước khi tắt ứng dụng.
@@ -111,9 +110,9 @@ func (a *Application) Shutdown() {
 			CheckpointData: &pb.Checkpoint{Offset: &pb.Checkpoint_Lsn{Lsn: finalLSN}},
 		}
 		if errSave := utils.SaveProviderCheckpoint(a.Config.SaveDestination, finalData); errSave != nil {
-			log.Printf("CHECKPOINT: Lỗi khi lưu checkpoint cuối cùng: %v", errSave)
+			slog.Error("CHECKPOINT: Lỗi khi lưu checkpoint cuối cùng", "error", errSave)
 		} else {
-			log.Printf("CHECKPOINT: Đã lưu thành công LSN cuối cùng là %d.", finalLSN)
+			slog.Info("CHECKPOINT: Đã lưu thành công LSN cuối cùng.", "lsn", finalLSN)
 		}
 	}
 }

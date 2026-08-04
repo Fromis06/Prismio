@@ -1,8 +1,9 @@
 package api
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -44,8 +45,8 @@ func (h *ConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authenticate kiểm tra API Key từ header.
 func (h *ConfigHandler) authenticate(w http.ResponseWriter, r *http.Request) bool {
-	// Nếu không có API Key được cấu hình, bỏ qua xác thực (chỉ dùng cho dev/test)
-	if h.AppConfig.Monitor.HashedAPIKey == "" {
+	// Nếu không có API Key nào được cấu hình, bỏ qua xác thực (chỉ dùng cho dev/test)
+	if len(h.AppConfig.Monitor.HashedAPIKeys) == 0 {
 		return true
 	}
 
@@ -56,8 +57,9 @@ func (h *ConfigHandler) authenticate(w http.ResponseWriter, r *http.Request) boo
 	}
 
 	// Băm API Key nhận được và so sánh bằng hàm hằng số thời gian
-	hashedIncomingKey := hashAPIKey(apiKey)
-	if subtle.ConstantTimeCompare([]byte(hashedIncomingKey), []byte(h.AppConfig.Monitor.HashedAPIKey)) == 0 {
+	hashedIncomingKey := HashAPIKey(apiKey)
+	// Kiểm tra xem hash có tồn tại trong map các key hợp lệ không
+	if _, ok := h.AppConfig.Monitor.HashedAPIKeys[hashedIncomingKey]; !ok {
 		http.Error(w, "Unauthorized: Invalid API Key", http.StatusUnauthorized)
 		return false
 	}
@@ -122,4 +124,21 @@ func HashAPIKey(key string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// GenerateNewAPIKey tạo một API key ngẫu nhiên an toàn và hash SHA-256 của nó.
+func GenerateNewAPIKey() (rawKey string, hashedKey string, err error) {
+	// Tạo 32 byte ngẫu nhiên cho key
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", "", err
+	}
+
+	// Mã hóa các byte ngẫu nhiên thành chuỗi base64 an toàn cho URL
+	rawKey = base64.URLEncoding.EncodeToString(randomBytes)
+
+	// Băm key gốc
+	hashedKey = HashAPIKey(rawKey)
+
+	return rawKey, hashedKey, nil
 }

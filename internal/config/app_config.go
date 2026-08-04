@@ -86,7 +86,7 @@ type MonitorConfig struct {
 	HttpPort           int    `json:"http_port"`            // Cổng HTTP cho endpoint giám sát.
 	ListenAddress      string `json:"listen_address"`       // Địa chỉ lắng nghe cho HTTP server (VD: "localhost", "0.0.0.0").
 	MonitorIntervalSec int    `json:"monitor_interval_sec"` // Tần suất (giây) giám sát và in log.
-	HashedAPIKey       string `json:"hashed_api_key"`       // Khóa API đã băm để xác thực các yêu cầu đến endpoint /config.
+	HashedAPIKeys      map[string]string `yaml:"hashed_api_keys"` // Map các khóa API đã băm. Key là hash, value là mô tả.
 }
 
 // CheckpointSaveDestination định nghĩa nơi lưu file checkpoint.
@@ -147,9 +147,11 @@ func NewDefaultConfig() *AppConfig {
 	cfg.Monitor.ListenAddress = "localhost"
 	cfg.Monitor.MonitorIntervalSec = 5
 	// Băm API Key mặc định. RẤT QUAN TRỌNG: Thay đổi khóa này trong môi trường sản phẩm!
+	cfg.Monitor.HashedAPIKeys = make(map[string]string) // Khởi tạo map
 	defaultAPIKey := "your-super-secret-api-key"
 	hashedDefaultAPIKey := sha256.Sum256([]byte(defaultAPIKey))
-	cfg.Monitor.HashedAPIKey = hex.EncodeToString(hashedDefaultAPIKey[:])
+	hexHashedKey := hex.EncodeToString(hashedDefaultAPIKey[:])
+	cfg.Monitor.HashedAPIKeys[hexHashedKey] = "Default key" // Sửa lỗi đánh máy
 
 	// Cấu hình lưu trữ checkpoint
 	cfg.SaveDestination.Path = "./local_checkpoints"

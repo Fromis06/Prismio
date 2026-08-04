@@ -1,0 +1,67 @@
+====================================================================
+=             HƯỚNG DẪN VIẾT TÀI LIỆU & VẼ SƠ ĐỒ KIẾN TRÚC         =
+=                   (Dành cho System Architect)                    =
+====================================================================
+
+I. GỢI Ý 3 BỘ DIAGRAM "ĂN TIỀN" (Nên dùng Draw.io, Excalidraw hoặc Mermaid.js)
+
+1. System Architecture Diagram (Sơ đồ Kiến trúc Tổng thể)
+* Mục đích: Giúp người xem hiểu toàn bộ luồng dữ liệu từ Source đến Sinks trong 30 giây.
+* Chi tiết thiết kế sơ đồ:
+  - [Bên Trái]: Khối PostgreSQL (Source DB) với Replication Slot phát ra WAL.
+  - [Ở Giữa - Capture]: Khối Listener (pglogrepl) nhận WAL -> Đẩy qua Processor (Decoder). Vẽ icon cái "Túi" (ChangeEventBagPool) ở đây.
+  - [Ở Giữa - Điều phối]: Kênh truyền tải (EventChan) nối tới MultiSink (Bộ chia).
+  - [Bên Phải - Sinks]: Vẽ n khối DataProcessor. Bên trong mỗi khối vẽ cấu trúc Fan-out (nhiều Worker chạy QueryBuilder) -> Fan-in (gom lô Batch) -> Database Executor (pgxpool) -> Đích đến (Dest DBs).
+  - [Khối Feedback - Quan trọng nhất]: Vẽ một luồng mũi tên ngược từ Sinks quay lại khối `GlobalState`. Khối này giữ biến `MinLSN` và bắn mũi tên về lại Postgres để báo cáo `StandbyStatusUpdate` (Watermark mechanism).
+
+2. Sequential Diagram (Vòng đời Checkpoint & Watermark)
+* Mục đích: Khẳng định hệ thống đảm bảo At-Least-Once delivery và không bao giờ mất dữ liệu.
+* Trình tự (Lifelines):
+  - Postgres -> Listener: Gửi XLogData (LSN: 100).
+  - Listener -> Processor: Phân tích byte thô thành ChangeEvent chuẩn hóa.
+  - Processor -> MultiSink: Ném túi sự kiện qua Channel.
+  - MultiSink -> Sink A & Sink B: Gửi lô dữ liệu.
+  - Sink A -> Dest DB A: Lệnh Upsert thành công (Nhanh) -> Báo cáo GlobalState: LSN 100.
+  - Sink B -> Dest DB B: Đang kẹt mạng (Chậm) -> LSN vẫn là 0.
+  - Listener -> GlobalState: Xin MinLSN -> Nhận về 0 (vì Sink B chưa xong).
+  - Listener -> Postgres: Báo cáo tao mới xử lý tới LSN 0 (Giữ lại file WAL giùm).
+  - (Sau đó Sink B xong, MinLSN thành 100 -> Listener báo Postgres xóa WAL).
+  - Listener -> File System: Ghi Atomic Checkpoint (*.tmp -> rename).
+
+3. State Machine / Flowchart (Error Handling & Graceful Degradation)
+* Mục đích: Chứng minh hệ thống có tính "Resilience" (Khả năng chịu lỗi), không bị sập dây chuyền.
+* Các trạng thái:
+  - [Active]: Nhận và xử lý Batch bình thường.
+  - [Error Detected]: Gặp lỗi DB đích (timeout, connection refused).
+  - [Retry Loop]: Áp dụng Exponential Backoff (chờ 2s -> 4s -> 8s) để thử lại lô dữ liệu.
+  - [Max Retries Exceeded]: Vượt quá số lần thử.
+  - [Circuit Breaker Tripped]: Cờ `isActive` = false. Gỡ Sink khỏi `GlobalState` (để nhả MinLSN).
+  - [Black Hole]: Từ nay về sau, sự kiện tới Sink này bị Drop ngay lập tức để không làm nghẽn RAM.
+
+====================================================================
+
+II. CẤU TRÚC DOCUMENTATION (README.md hoặc Wiki nội bộ)
+
+1. Design Philosophy (Triết lý thiết kế)
+* Ngôn ngữ & Concurrency: Giải thích việc dùng Golang với Goroutines/Channels để xử lý song song I/O-bound tasks thay vì dùng Thread Pool truyền thống của Java/C#.
+* Tối ưu GC (Garbage Collector): Nhấn mạnh việc sử dụng `sync.Pool` để quản lý các túi sự kiện (Bags) và byte arrays, giúp giảm hàng triệu object bị cấp phát thừa, giữ Heap memory ổn định.
+* Kiến trúc 1-to-N & Driver Registry: Trình bày nguyên lý SOLID (Open/Closed Principle) qua việc đăng ký Sink ẩn danh bằng hàm `init()`.
+
+2. Reliability Engineering (Kỹ thuật Đảm bảo Độ tin cậy)
+* Idempotency (Tính Lũy đẳng): Tại sao phải biến lệnh `INSERT` thành `UPSERT (ON CONFLICT DO UPDATE)`? (Trả lời: Để khi app bị crash và đọc lại dữ liệu cũ từ Checkpoint, việc ghi đè 1000 lần vẫn ra đúng 1 kết quả, không bị Duplicate Key).
+* Atomic Checkpointing: Đừng chỉ nói "ghi file JSON". Hãy giải thích quá trình: Ghi vào file `.tmp`, gọi `fsync`, rồi mới `os.Rename`. Nhờ vậy, rút điện đột ngột lúc đang ghi file cũng không làm hỏng file checkpoint cũ.
+
+3. Performance & Benchmarks (Đo lường Hiệu năng)
+* Môi trường Test: Mô tả cấu hình máy (VD: 4 Cores, 8GB RAM).
+* Metrics: Hiển thị biểu đồ TPS (Transactions Per Second). Ví dụ: "Hệ thống xử lý mượt mà 10,000 events/giây".
+* RAM Spike Explanation: Nếu có log RAM đẩy lên 600MB rồi hạ xuống, hãy giải thích đây là hành vi tự nhiên của Go GC khi buffer channel đang đầy và chưa đến chu kỳ gom rác, app không hề bị Memory Leak. (Gợi ý đính kèm ảnh chụp màn hình từ `pprof` heap profile).
+
+4. Future Extensions (Roadmap mở rộng)
+* Lấy nội dung từ danh sách Mức 2 & 3 đã vạch ra (Data Type Mapping, Initial Snapshot, DLQ, Prometheus Metrics).
+* Lưu ý ghi rõ: "Tuy dự án hiện tại là bản MVP tập trung vào Core Engine, nhưng cấu trúc đã được thiết kế mở (Decoupled) để sẵn sàng cắm thêm các Module này trong tương lai".
+
+====================================================================
+
+III. NHỮNG MẸO NHỎ (BONUS)
+* Code Comments: Hệ thống hiện tại đã được đánh dấu tag `[Pattern: ...]`, hãy trích xuất các file này làm snippet trong Doc.
+* Run Instructions: Phải có hướng dẫn `docker-compose.yml` cực kỳ đơn giản để người xem chạy được ngay 1 con Postgres Nguồn và 1 con Postgres Đích bằng 1 câu lệnh `docker-compose up -d`. Trải nghiệm "One-click to run" sẽ lấy điểm tuyệt đối từ người phỏng vấn.
