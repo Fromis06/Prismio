@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"my-cdc/internal/api"
 	"my-cdc/internal/config"
 	"my-cdc/internal/models"
 )
@@ -24,9 +25,16 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 		if port == 0 {
 			port = 8080 // Mặc định nếu chưa cấu hình
 		}
-		log.Printf("MONITOR: Bật PPROF tại http://localhost:%d/debug/pprof/", port)
-		// Khởi chạy HTTP Server cho pprof
-		log.Println(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+		listenAddr := cfg.Monitor.ListenAddress
+
+		// Đăng ký handler cho PPROF và API cấu hình
+		configHandler := api.NewConfigHandler(cfg)
+		http.Handle("/config", configHandler)
+
+		log.Printf("MONITOR: Bật PPROF tại http://%s:%d/debug/pprof/", listenAddr, port)
+		log.Printf("API: Bật endpoint quản lý cấu hình tại http://%s:%d/config (GET, POST)", listenAddr, port)
+
+		log.Println(http.ListenAndServe(fmt.Sprintf("%s:%d", listenAddr, port), nil))
 	}()
 
 	var lastInsert, lastUpdate, lastDelete int64
@@ -53,20 +61,13 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 		allocMB := m.Alloc / 1024 / 1024
 		Sys := m.Sys / 1024 / 1024
 
-		log.Printf("MONITOR: EPS=%.0f, RAM(Go)=%dMB, RAM(Sys)=%dMB, Tổng Events=%d", eps, allocMB, Sys, currentInsert+currentUpdate+currentDelete)
+		// In ra các thông số hiệu năng hiện tại.
+		// Các giá trị này có thể được thay đổi "nóng" từ bên ngoài vì chúng là kiểu atomic.
+		liveWorkers := cfg.DataProcessing.DataProcessingWorkerCount.Load()
+		liveBatchSize := cfg.Batch.BatchMaxSize.Load()
+		liveBatchTimeout := cfg.Batch.BatchTimeout.Load()
 
-		// Logic tự động điều chỉnh (Auto-Tuner):
-		// Chỉ cần thay đổi giá trị trong `cfg`, các thành phần khác sẽ tự động nhận.
-		if eps > 10000 {
-			// Khi lưu lượng cao (bão): Tăng kích thước lô, giảm thời gian chờ để xả nhanh hơn.
-			cfg.Batch.BatchMaxSize.Store(50000)
-			cfg.Batch.BatchTimeout.Store(500)
-			cfg.DataProcessing.DataProcessingWorkerCount.Store(16)
-		} else if eps > 0 {
-			// Khi lưu lượng bình thường: Dùng kích thước lô nhỏ hơn, chờ lâu hơn để gom đủ.
-			cfg.Batch.BatchMaxSize.Store(5000)
-			cfg.Batch.BatchTimeout.Store(200)
-			cfg.DataProcessing.DataProcessingWorkerCount.Store(10)
-		}
+		log.Printf("MONITOR: EPS=%.0f | RAM(Go)=%dMB, RAM(Sys)=%dMB | Workers=%d, BatchSize=%d, Timeout=%dms | Tổng Events=%d",
+			eps, allocMB, Sys, liveWorkers, liveBatchSize, liveBatchTimeout, currentInsert+currentUpdate+currentDelete)
 	}
 }

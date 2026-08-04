@@ -10,7 +10,7 @@ import (
 	"my-cdc/internal/models"
 	"my-cdc/internal/pb"
 	"my-cdc/internal/sinks"
-	"my-cdc/internal/utils"
+	"my-cdc/internal/tuning"
 )
 
 // Application chứa tất cả các thành phần cốt lõi của hệ thống CDC.
@@ -21,6 +21,7 @@ type Application struct {
 	EventsCount *models.EventsCount
 	MultiSink   *sinks.MultiSink
 	Listener    capture.Listener
+	AutoTuner   *tuning.AutoTuner
 }
 
 // Initialize khởi tạo tất cả các thành phần (Config, Pool, Checkpoint, Sinks, Listener).
@@ -86,12 +87,16 @@ func Initialize(ctx context.Context) *Application {
 		log.Fatalf("CAPTURE: Lỗi khởi tạo nguồn: %v", err)
 	}
 
+	// 5. Khởi tạo bộ tự động điều chỉnh (Auto-Tuner)
+	autoTuner := tuning.NewAutoTuner(cfg, eventsCount)
+
 	return &Application{
 		Config:      cfg,
 		GlobalState: globalState,
 		EventsCount: eventsCount,
 		MultiSink:   multiSink,
 		Listener:    listener,
+		AutoTuner:   autoTuner,
 	}
 }
 

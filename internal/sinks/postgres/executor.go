@@ -8,17 +8,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// [Pattern: Connection Pool] Executor duy trì hồ chứa kết nối để tăng tốc độ ghi.
+// [Pattern: Connection Pool] Executor maintains a connection pool to speed up writes.
 type Executor struct {
 	Pool *pgxpool.Pool
 }
 
-// Init mở kết nối bằng connection pool thay vì 1 connection đơn lẻ
+// Init opens a connection using a connection pool instead of a single connection.
 func (pe *Executor) Init(ctx context.Context, url string) error {
-	slog.Info("SINK (Postgres): Đang khởi tạo connection pool")
+	slog.Info("SINK (Postgres): Initializing connection pool")
 	var err error
 
-	// Phân tích chuỗi URL để có thể tùy chỉnh thêm cấu hình pool nếu cần.
+	// Parse the URL string to allow for further customization of the pool configuration if needed.
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return err
@@ -29,16 +29,16 @@ func (pe *Executor) Init(ctx context.Context, url string) error {
 		return err
 	}
 
-	// Kiểm tra kết nối thực tế
+	// Check the actual connection
 	if err := pe.Pool.Ping(ctx); err != nil {
 		return err
 	}
 
-	slog.Info("SINK (Postgres): Connection pool đã sẵn sàng")
+	slog.Info("SINK (Postgres): Connection pool is ready")
 	return nil
 }
 
-// [Pattern: Batch Execution] ExecuteBatch gửi nhiều lệnh SQL trong 1 lần round-trip mạng để tối ưu I/O.
+// [Pattern: Batch Execution] ExecuteBatch sends multiple SQL commands in a single network round-trip to optimize I/O.
 func (pe *Executor) ExecuteBatch(ctx context.Context, queries []string, argsList [][]any) error {
 	if len(queries) == 0 {
 		return nil
@@ -54,18 +54,18 @@ func (pe *Executor) ExecuteBatch(ctx context.Context, queries []string, argsList
 
 	for i := 0; i < len(queries); i++ {
 		if _, err := br.Exec(); err != nil {
-			// Ghi log chi tiết về câu lệnh gây lỗi để dễ dàng debug.
-			return err // Lỗi đã được ghi trong DataProcessor, ở đây chỉ cần trả về
+			// Log details about the failing command for easy debugging.
+			return err // The error has been logged in DataProcessor, just return it here
 		}
 	}
 
 	return nil
 }
 
-// Close dọn dẹp tài nguyên khi hệ thống tắt
+// Close cleans up resources when the system shuts down.
 func (pe *Executor) Close() error {
 	if pe.Pool != nil {
-		slog.Info("SINK (Postgres): Đang đóng connection pool")
+		slog.Info("SINK (Postgres): Closing connection pool")
 		pe.Pool.Close()
 	}
 	return nil

@@ -5,32 +5,32 @@ import (
 	"time"
 )
 
-// DoWithRetry thực hiện một hành động (operation) và tự động thử lại nếu nó thất bại.
-// Hàm sử dụng chiến lược "Exponential Backoff": thời gian chờ giữa các lần thử lại
-// sẽ tăng gấp đôi, cho đến khi đạt đến một giới hạn tối đa (maxDelay).
+// DoWithRetry executes an operation and automatically retries it if it fails.
+// It uses an "Exponential Backoff" strategy: the waiting time between retries
+// will double until it reaches a maximum limit (maxDelay).
 func DoWithRetry(maxRetries int, baseDelay time.Duration, maxDelay time.Duration, operation func() error) error {
 	var err error
 	backoff := baseDelay
 
-	// Vòng lặp tính cả lần chạy đầu tiên (nên maxRetries + 1)
+	// The loop includes the first run (so maxRetries + 1)
 	for i := 1; i <= maxRetries+1; i++ {
 		err = operation()
 		if err == nil {
-			return nil // Thành công
+			return nil // Success
 		}
 
 		if i <= maxRetries {
-			log.Printf("RETRY: Thao tác thất bại (lần %d/%d). Thử lại sau %v. Lỗi: %v", i, maxRetries, backoff, err)
+			log.Printf("RETRY: Operation failed (attempt %d/%d). Retrying after %v. Error: %v", i, maxRetries, backoff, err)
 			time.Sleep(backoff)
 
-			// Tăng gấp đôi thời gian chờ cho lần thử lại tiếp theo.
+			// Double the waiting time for the next retry.
 			backoff *= 2
 			if backoff > maxDelay {
-				backoff = maxDelay // Không cho phép thời gian chờ vượt quá giới hạn.
+				backoff = maxDelay // Do not allow the waiting time to exceed the limit.
 			}
 		}
 	}
 
-	log.Printf("RETRY: Bỏ cuộc sau %d lần thử. Lỗi cuối cùng: %v", maxRetries, err)
+	log.Printf("RETRY: Giving up after %d attempts. Last error: %v", maxRetries, err)
 	return err
 }

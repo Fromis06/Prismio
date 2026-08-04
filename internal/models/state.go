@@ -5,30 +5,30 @@ import (
 	"sync/atomic"
 )
 
-// [Pattern: Thread-Safe State] GlobalState quản lý mốc checkpoint độc lập cho từng Sink một cách an toàn.
+// [Pattern: Thread-Safe State] GlobalState safely manages independent checkpoints for each Sink.
 type GlobalState struct {
-	checkpoints sync.Map // Key: Tên Sink (string), Value: LSN (*atomic.Uint64).
+	checkpoints sync.Map // Key: Sink Name (string), Value: LSN (*atomic.Uint64).
 }
 
-// NewGlobalState khởi tạo một GlobalState mới.
+// NewGlobalState initializes a new GlobalState.
 func NewGlobalState() *GlobalState {
 	return &GlobalState{}
 }
 
-// InitSink khởi tạo mốc checkpoint ban đầu cho một Sink cụ thể.
+// InitSink initializes the initial checkpoint for a specific Sink.
 func (g *GlobalState) InitSink(sinkName string, initialVal uint64) {
 	val := &atomic.Uint64{}
 	val.Store(initialVal)
 	g.checkpoints.Store(sinkName, val)
 }
 
-// RemoveSink xóa mốc checkpoint của một Sink khỏi hệ thống.
-// Dùng khi một Sink bị lỗi và cần ngắt bỏ mà không làm ảnh hưởng đến tiến trình chung.
+// RemoveSink removes a Sink's checkpoint from the system.
+// Used when a Sink fails and needs to be disconnected without affecting the overall process.
 func (g *GlobalState) RemoveSink(sinkName string) {
 	g.checkpoints.Delete(sinkName)
 }
 
-// UpdateCheckpoint cập nhật mốc checkpoint cho một Sink cụ thể.
+// UpdateCheckpoint updates the checkpoint for a specific Sink.
 func (g *GlobalState) UpdateCheckpoint(sinkName string, val uint64) {
 	actual, ok := g.checkpoints.Load(sinkName)
 	if !ok {
@@ -46,7 +46,7 @@ func (g *GlobalState) UpdateCheckpoint(sinkName string, val uint64) {
 	}
 }
 
-// GetMinCheckpoint trả về mốc checkpoint nhỏ nhất trong tất cả các Sinks.
+// GetMinCheckpoint returns the smallest checkpoint among all Sinks.
 func (g *GlobalState) GetMinCheckpoint() uint64 {
 	var min uint64 = 0
 	first := true

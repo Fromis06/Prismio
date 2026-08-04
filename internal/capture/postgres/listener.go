@@ -31,21 +31,21 @@ func NewListener(cfg *config.AppConfig, targetSink sinks.Pipeline, counts *model
 }
 
 func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *models.GlobalState) error {
-	slog.Info("CAPTURE: Đang kết nối đến database nguồn...")
+	slog.Info("CAPTURE: Connecting to the source database...")
 
 	connConfig, err := pgconn.ParseConfig(sourceURL)
 	if err != nil {
-		return fmt.Errorf("không thể phân tích URL của nguồn: %w", err)
+		return fmt.Errorf("could not parse source URL: %w", err)
 	}
 
 	slotName := connConfig.RuntimeParams["slot_name"]
 	if slotName == "" {
-		return fmt.Errorf("replication slot_name không được chỉ định trong URL nguồn")
+		return fmt.Errorf("replication slot_name not specified in source URL")
 	}
 
 	publicationNames := connConfig.RuntimeParams["publication_names"]
 	if publicationNames == "" {
-		return fmt.Errorf("publication_names không được chỉ định trong URL nguồn")
+		return fmt.Errorf("publication_names not specified in source URL")
 	}
 
 	var conn *pgconn.PgConn
@@ -68,7 +68,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 	if err != nil {
 		return err
 	}
-	slog.Info("CAPTURE: Kết nối thành công", "system_lsn", sysident.XLogPos.String())
+	slog.Info("CAPTURE: Connection successful", "system_lsn", sysident.XLogPos.String())
 
 	_, err = pglogrepl.CreateReplicationSlot(ctx, conn, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{
 		Mode: pglogrepl.LogicalReplication,
@@ -77,10 +77,10 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 		return err
 	}
 
-	// Lấy mốc Checkpoint đã load từ đĩa (nếu có) để yêu cầu Postgres bắt đầu từ chính xác điểm này
+	// Get the Checkpoint loaded from disk (if any) to request Postgres to start from this exact point
 	startLSN := globalState.GetMinCheckpoint()
 	if startLSN > 0 {
-		slog.Info("CAPTURE: Yêu cầu Postgres bắt đầu gửi dữ liệu từ LSN", "lsn", startLSN)
+		slog.Info("CAPTURE: Requesting Postgres to start sending data from LSN", "lsn", startLSN)
 	}
 
 	pluginArgs := []string{
@@ -94,7 +94,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 		return err
 	}
 
-	slog.Info("CAPTURE: Bắt đầu lắng nghe các thay đổi từ PostgreSQL...")
+	slog.Info("CAPTURE: Starting to listen for changes from PostgreSQL...")
 
 	feedbackInterval := time.Duration(l.Config.Capture.FeedbackInterval.Load()) * time.Second
 	ticker := time.NewTicker(feedbackInterval)
@@ -102,12 +102,12 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 
 	for {
 		select {
-		case <-ctx.Done(): // Nhận tín hiệu dừng từ context chính
+		case <-ctx.Done(): // Receive stop signal from the main context
 			return nil
 
 		case <-ticker.C:
-			// Định kỳ gửi StandbyStatusUpdate để báo cho Postgres biết LSN đã xử lý,
-			// giúp Postgres dọn dẹp file WAL và tránh đầy đĩa.
+			// Periodically send StandbyStatusUpdate to inform Postgres of the processed LSN,
+			// which helps Postgres clean up WAL files and avoid disk space issues.
 			confirmedLSN := globalState.GetMinCheckpoint()
 
 			if confirmedLSN > 0 {
@@ -118,8 +118,8 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 				})
 
 				if errUpdate == nil {
-					// Đồng thời, lưu checkpoint này xuống đĩa một cách định kỳ.
-					// Điều này phòng trường hợp app bị tắt đột ngột (kill -9) mà không qua graceful shutdown.
+					// At the same time, periodically save this checkpoint to disk.
+					// This prevents data loss in case the app is suddenly terminated (kill -9) without a graceful shutdown.
 					ckptData := models.CheckpointFileData{
 						InstanceName: l.Config.Provider.Source.Name,
 						SourceType:   pb.SourceType_SOURCE_POSTGRES,
@@ -129,29 +129,29 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					}
 					errSave := utils.SaveProviderCheckpoint(l.Config.SaveDestination, ckptData)
 					if errSave != nil {
-						slog.Warn("CAPTURE: Lỗi lưu checkpoint định kỳ xuống đĩa", "error", errSave)
+						slog.Warn("CAPTURE: Error saving periodic checkpoint to disk", "error", errSave)
 					}
-				} else {
-					slog.Warn("CAPTURE: Lỗi gửi StandbyStatusUpdate", "error", errUpdate)
-				}
-			}
-		default:
-			ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Second)
-			msg, err := conn.ReceiveMessage(ctxTimeout)
-			cancel()
-			if err != nil {
-				// Nếu là lỗi timeout, bỏ qua và tiếp tục vòng lặp.
-				if pgconn.Timeout(err) {
+					} else {
+					slog.Warn("CAPTURE: Error sending StandbyStatusUpdate", "error", errUpdate)
+					}
+					}
+					default:
+					ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Second)
+					msg, err := conn.ReceiveMessage(ctxTimeout)
+					cancel()
+					if err != nil {
+					// If it's a timeout error, ignore it and continue the loop.
+					if pgconn.Timeout(err) {
 					continue
-				}
-				continue
-			}
+					}
+					continue
+					}
 
-			if cd, ok := msg.(*pgproto3.CopyData); ok {
-				switch cd.Data[0] {
-				case pglogrepl.PrimaryKeepaliveMessageByteID:
+					if cd, ok := msg.(*pgproto3.CopyData); ok {
+					switch cd.Data[0] {
+					case pglogrepl.PrimaryKeepaliveMessageByteID:
 					pkm, _ := pglogrepl.ParsePrimaryKeepaliveMessage(cd.Data[1:])
-					// Postgres yêu cầu phản hồi để kiểm tra kết nối còn sống không.
+					// Postgres requests a response to check if the connection is still alive.
 					if pkm.ReplyRequested {
 						confirmedLSN := globalState.GetMinCheckpoint()
 						if confirmedLSN == 0 {
@@ -163,16 +163,16 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 							WALApplyPosition: pglogrepl.LSN(confirmedLSN),
 						})
 					}
-				case pglogrepl.XLogDataByteID:
+					case pglogrepl.XLogDataByteID:
 					xld, err := pglogrepl.ParseXLogData(cd.Data[1:])
-					// Đây là gói tin chứa dữ liệu thay đổi (INSERT, UPDATE, DELETE...).
+					// This is the packet containing change data (INSERT, UPDATE, DELETE...).
 					if err != nil {
 						continue
 					}
 					currentLSN := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 					l.Processor.ProcessRawBytes(xld.WALData, currentLSN)
-				}
-			}
-		}
-	}
-}
+					}
+					}
+					}
+					}
+					}

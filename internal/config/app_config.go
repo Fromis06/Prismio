@@ -1,12 +1,12 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync/atomic"
 )
 
-// ==============================================================================
-// 1. CẤU HÌNH KẾT NỐI (CONNECTIVITY)
-// ==============================================================================
+// Connectivity
 
 // DBConnection định nghĩa thông tin cơ bản cho một kết nối cơ sở dữ liệu.
 type DBConnection struct {
@@ -34,10 +34,8 @@ type DataConsumerConfig struct {
 	List []DBConnection // Cho phép ghi ra nhiều đích cùng lúc.
 }
 
-// ==============================================================================
-// 2. CẤU HÌNH HIỆU NĂNG (PERFORMANCE TUNING)
-// ==============================================================================
-// Các cấu hình trong phần này sử dụng kiểu `atomic` để có thể được điều chỉnh
+// Performance Tuning
+// Các cấu hình trong phần này sử dụng kiểu `atomic` để có thể được điều chỉnh "nóng"
 // "nóng" (live-tuning) trong lúc ứng dụng đang chạy mà không cần khởi động lại.
 
 // CaptureConfig cấu hình cho giai đoạn "bắt" dữ liệu từ nguồn.
@@ -69,9 +67,7 @@ type BatchConfig struct {
 	FlushTimeoutMs atomic.Int64 // Thời gian (mili giây) timeout cho một thao tác ghi (flush) xuống DB.
 }
 
-// ==============================================================================
-// 3. CẤU HÌNH ĐỘ TIN CẬY & KIỂM SOÁT (STABILITY & CONTROL)
-// ==============================================================================
+// Stability & Control
 
 // StateStorageConfig cấu hình nơi lưu trữ trạng thái (checkpoint).
 type StateStorageConfig struct {
@@ -86,8 +82,11 @@ type FilterConfig struct {
 
 // MonitorConfig cấu hình cho bộ giám sát và auto-tuning.
 type MonitorConfig struct {
-	EnableMetrics bool `json:"enable_metrics"` // Bật/tắt endpoint Prometheus. (Chưa dùng)
-	HttpPort      int  `json:"http_port"`      // Cổng HTTP cho endpoint giám sát.
+	EnableMetrics      bool   `json:"enable_metrics"`       // Bật/tắt endpoint Prometheus. (Chưa dùng)
+	HttpPort           int    `json:"http_port"`            // Cổng HTTP cho endpoint giám sát.
+	ListenAddress      string `json:"listen_address"`       // Địa chỉ lắng nghe cho HTTP server (VD: "localhost", "0.0.0.0").
+	MonitorIntervalSec int    `json:"monitor_interval_sec"` // Tần suất (giây) giám sát và in log.
+	HashedAPIKey       string `json:"hashed_api_key"`       // Khóa API đã băm để xác thực các yêu cầu đến endpoint /config.
 }
 
 // CheckpointSaveDestination định nghĩa nơi lưu file checkpoint.
@@ -95,9 +94,7 @@ type CheckpointSaveDestination struct {
 	Path string `json:"path"` // Đường dẫn đến thư mục chứa các file checkpoint.
 }
 
-// ==============================================================================
-// 4. CẤU HÌNH TRUNG TÂM (CENTRAL CONFIG)
-// ==============================================================================
+// Central Config
 
 // AppConfig là struct gốc, tổng hợp tất cả các cấu hình của ứng dụng.
 type AppConfig struct {
@@ -115,12 +112,10 @@ type AppConfig struct {
 	SaveDestination CheckpointSaveDestination
 }
 
-// NewDefaultConfig khởi tạo một bộ cấu hình mặc định, an toàn để chạy.
 func NewDefaultConfig() *AppConfig {
 	cfg := &AppConfig{}
 
-	// --- Cấu hình kết nối mặc định ---
-	// Thêm tham số slot_name vào cuối URL
+	// Cấu hình kết nối mặc định
 	cfg.Provider.Source.URL = "postgres://postgres:password@192.168.137.89:5420/postgres?sslmode=disable&replication=database&slot_name=cdc_test_slot&publication_names=cdc_pub"
 	cfg.Provider.Source.Name = "postgres_source_native"
 	cfg.Provider.Source.Type = "postgres"
@@ -131,33 +126,33 @@ func NewDefaultConfig() *AppConfig {
 			URL:      "postgres://postgres:password@192.168.137.194:5419/postgres?sslmode=disable",
 			IsActive: true,
 		},
-		// {
-		// 	Name:     "cdc-db_destination_mysql",
-		// 	Type:     "mysql",
-		// 	URL:      "root:password@tcp(127.0.0.1:3306)/dest_db",
-		// 	IsActive: true,
-		// },
 	}
-	// --- Cấu hình hiệu năng mặc định ---
+	// Cấu hình hiệu năng mặc định
 	cfg.Capture.CaptureMaxSize.Store(100000)
 	cfg.Capture.FeedbackInterval.Store(10)
 	cfg.Pipeline.PipelineMaxSize.Store(1000)
 	cfg.Bag.BagMaxSize.Store(10000)
 	cfg.Bag.BagMaxMultiple.Store(5)
-	cfg.DataProcessing.DataProcessingWorkerCount.Store(10)
-	cfg.Batch.BatchMaxSize.Store(10000)
-	cfg.Batch.BatchTimeout.Store(1000)
-	cfg.Batch.FlushTimeoutMs.Store(120000) // 2 phút
+	cfg.DataProcessing.DataProcessingWorkerCount.Store(10) // Số worker xử lý
+	cfg.Batch.BatchMaxSize.Store(5000)                     // Kích thước lô
+	cfg.Batch.BatchTimeout.Store(200)                      // Thời gian chờ lô (ms)
+	cfg.Batch.FlushTimeoutMs.Store(120000)
 
-	// --- Cấu hình độ tin cậy & giám sát mặc định ---
+	// Cấu hình độ tin cậy & giám sát mặc định
 	cfg.Retry.MaxRetries = 3
 	cfg.Retry.BaseDelayMs = 2000
 	cfg.Retry.MaxDelayTimeMs = 30000
 	cfg.State.StorageType = "file"
 	cfg.Monitor.HttpPort = 8080
+	cfg.Monitor.ListenAddress = "localhost"
+	cfg.Monitor.MonitorIntervalSec = 5
+	// Băm API Key mặc định. RẤT QUAN TRỌNG: Thay đổi khóa này trong môi trường sản phẩm!
+	defaultAPIKey := "your-super-secret-api-key"
+	hashedDefaultAPIKey := sha256.Sum256([]byte(defaultAPIKey))
+	cfg.Monitor.HashedAPIKey = hex.EncodeToString(hashedDefaultAPIKey[:])
 
-	// --- Cấu hình lưu trữ checkpoint ---
-	cfg.SaveDestination.Path = "./local_checkpoints" // Thư mục lưu file checkpoint
+	// Cấu hình lưu trữ checkpoint
+	cfg.SaveDestination.Path = "./local_checkpoints"
 
 	return cfg
 }

@@ -55,7 +55,8 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 		query.WriteString(strings.Join(placeholders, ", "))
 		query.WriteString(")")
 
-		// [Pattern: Idempotency (Upsert)] Biến Insert thành Upsert để an toàn khi ghi đè lại dữ liệu cũ.
+		// Sử dụng ON CONFLICT (Upsert) để đảm bảo tính idempotent.
+		// Nếu một sự kiện được xử lý lại, nó sẽ không tạo ra bản ghi trùng lặp.
 		if len(e.KeyNames) > 0 {
 			query.WriteString(" ON CONFLICT (")
 			query.WriteString(strings.Join(e.KeyNames, ", "))
