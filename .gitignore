@@ -63,4 +63,4 @@ Thumbs.db
 .txt
 .md
 /vendor/
-.yaml
+config.yaml
