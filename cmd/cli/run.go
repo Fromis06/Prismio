@@ -59,7 +59,7 @@ func Run() {
 
 	pages := tview.NewPages()
 
-	//dashboard := NewDashboard(tuiApp, nil) // Chưa có cdcApp, panels sẽ được cập nhật sau khi Bootstrap xong.
+	dashboard := NewDashboard(tuiApp)
 
 	errorModal := tview.NewModal().
 		SetText("Invalid API Key. Please try again.").
@@ -229,7 +229,7 @@ func Run() {
 			// Cập nhật UI để chuyển sang dashboard và bắt đầu cập nhật dữ liệu live
 			tuiApp.QueueUpdateDraw(func() {
 				pages.HidePage("running")
-				//dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
+				dashboard.StartLiveUpdates(ctx, newApp, time.Second)
 				pages.SwitchToPage("dashboard")
 			})
 		}()
@@ -242,7 +242,7 @@ func Run() {
 	pages.AddPage("login", loginForm, true, true)
 	pages.AddPage("createUser", centeredCreateUserForm, true, false)
 	pages.AddPage("config", configForm, true, false)
-	//pages.AddPage("dashboard", dashboard.Layout, true, false)
+	pages.AddPage("dashboard", dashboard.Layout, true, false)
 	pages.AddPage("error", errorModal, false, false)
 	pages.AddPage("usernameExists", usernameExistsModal, false, false)
 	pages.AddPage("bootstrap_error", bootstrapErrorModal, false, false)
