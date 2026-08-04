@@ -3,13 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"my-cdc/internal/app"
 
 	"github.com/rivo/tview"
 )
-
 // Dashboard giữ tham chiếu tới các panel để có thể cập nhật "sống" (live)
 // từ một goroutine nền, thay vì chỉ là layout tĩnh.
 type Dashboard struct {
@@ -44,7 +44,16 @@ func NewDashboard(tuiApp *tview.Application) *Dashboard {
 	d.tuningPanel.SetCell(0, 1, tview.NewTableCell("Value").SetSelectable(false))
 
 	d.logPanel = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	d.logPanel.SetBorder(true).SetTitle(" Activity ")
+	d.logPanel.SetBorder(true).SetTitle(" Activity / Logs ")
+
+	// TextView.Write is safe to call from any goroutine (unlike most other
+	// tview methods). SetChangedFunc fires after each write and is the
+	// documented way to trigger a redraw from a background goroutine —
+	// e.g. slog writing here from the Bootstrap goroutine.
+	d.logPanel.SetChangedFunc(func() {
+		d.logPanel.ScrollToEnd()
+		d.tuiApp.Draw()
+	})
 
 	leftColumn := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(d.statusPanel, 0, 1, false).
@@ -122,4 +131,9 @@ func (d *Dashboard) refresh(cdcApp *app.Application, interval time.Duration) {
 		fmt.Fprintf(d.logPanel, "[gray]%s[-] eps=%.0f total=%d min_lsn=%d\n",
 			time.Now().Format("15:04:05"), eps, total, minLSN)
 	})
+}
+// Writer exposes the log panel as an io.Writer so slog (or anything else)
+// can stream output directly into the TUI.
+func (d *Dashboard) Writer() io.Writer {
+	return d.logPanel
 }

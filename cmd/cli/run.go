@@ -22,9 +22,16 @@ import (
 )
 
 func Run() {
-	logger.Initialize()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	tuiApp := tview.NewApplication()
+	dashboard := NewDashboard(tuiApp)
+
+	// Ghi log ra cả stdout lẫn panel log của dashboard, để bấm "Run CDC"
+	// là log Bootstrap/checkpoint/sink hiện ngay trong TUI, không cần
+	// chờ tick refresh hay xem terminal ngầm (bị TUI chiếm màn hình).
+	logger.Initialize(dashboard.Writer())
 
 	const configPath = "config.yaml"
 
@@ -55,11 +62,7 @@ func Run() {
 	// updates). A plain `var cdcApp *app.Application` is a data race.
 	var cdcAppRef atomic.Pointer[app.Application]
 
-	tuiApp := tview.NewApplication()
-
 	pages := tview.NewPages()
-
-	dashboard := NewDashboard(tuiApp)
 
 	errorModal := tview.NewModal().
 		SetText("Invalid API Key. Please try again.").
