@@ -14,8 +14,11 @@ type DBConnection struct {
 	Type     string // Loại cơ sở dữ liệu (VD: "postgres").
 	URL      string // Chuỗi kết nối đầy đủ (Connection String).
 	IsActive bool   // Cờ để bật/tắt kết nối này.
+	// Options chứa các tham số đặc thù theo từng loại DB (VD: MongoDB: "auth_source",
+	// Kafka: "topic", "sasl_mechanism"...). Sink/Capture cụ thể tự đọc key nó cần,
+	// giúp thêm loại DB mới sau này không phải sửa lại struct config.
+	Options map[string]string
 }
-
 // RetryConfig chứa các tham số cho logic thử lại khi kết nối hoặc thao tác thất bại.
 type RetryConfig struct {
 	MaxRetries     int `json:"max_retries"`       // Số lần thử lại tối đa trước khi bỏ cuộc.

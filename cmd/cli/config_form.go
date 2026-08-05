@@ -12,8 +12,6 @@ import (
 	"github.com/rivo/tview"
 )
 
-// configRow đại diện cho một dòng trong bảng cấu hình.
-// IsAction=true đánh dấu dòng nút hành động (VD: "Thêm đích đến") thay vì dòng dữ liệu thông thường.
 type configRow struct {
 	Label    string
 	Get      func() string
@@ -23,10 +21,7 @@ type configRow struct {
 	OnAction func()
 }
 
-// NewConfigForm tạo bảng cấu hình với danh sách Destination URL động:
-// số dòng đích phụ thuộc vào cfg.Consumers.List, và có một dòng nút
-// "→ Thêm đích đến mới" luôn nằm ngay sau đích cuối cùng để chèn thêm consumer mới.
-func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback func()) (tview.Primitive, func()) {
+func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath string, runCallback func()) (tview.Primitive, func()) {
 	table := tview.NewTable().SetSelectable(true, false)
 	table.SetBorder(true).SetTitle(" Configuration ")
 
@@ -39,8 +34,13 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 	var rebuildTable func()
 	var startEdit func(rowIdx int)
 
-	// buildRows dựng lại toàn bộ danh sách dòng dựa trên trạng thái hiện tại của cfg.
-	// Được gọi lại mỗi khi số lượng đích thay đổi (sau khi bấm "Thêm đích đến").
+	// Hàm persist tự tạo để ghi đè config hiện tại xuống file yaml
+	persist := func() {
+		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
+			statusView.SetText(fmt.Sprintf("[red]Lưu config thất bại: %v[-]", saveErr))
+		}
+	}
+
 	buildRows = func() {
 		newRows := []configRow{
 			{
@@ -50,9 +50,8 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 			},
 		}
 
-		// Một dòng cho mỗi consumer hiện có — số lượng hoàn toàn động.
 		for i := range cfg.Consumers.List {
-			idx := i // Go 1.22+ đã per-iteration, nhưng khai báo tường minh cho rõ ý.
+			idx := i
 			label := "Destination URL"
 			if idx > 0 {
 				label = fmt.Sprintf("Destination URL %d", idx+1)
@@ -64,8 +63,6 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 			})
 		}
 
-		// Dòng nút "Thêm đích đến" luôn ở cuối danh sách Destination URL,
-		// đúng vị trí "cuối chuỗi" mà người dùng cần.
 		newRows = append(newRows, configRow{
 			Label:    "     →  Thêm đích đến mới",
 			IsAction: true,
@@ -81,12 +78,10 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 					URL:      "",
 					IsActive: true,
 				})
-				// Row 0 = Source URL, row 1..N = destinations => dòng đích vừa thêm nằm ở
-				// index = len(Consumers.List) sau khi append (1-based do có Source URL ở đầu).
 				newDestRowIdx := len(cfg.Consumers.List)
 				rebuildTable()
 				table.Select(newDestRowIdx, 0)
-				startEdit(newDestRowIdx) // Mở luôn ô nhập để gõ URL ngay, không cần double-click thêm.
+				startEdit(newDestRowIdx)
 			},
 		})
 
@@ -183,8 +178,6 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 
 	rootPages := tview.NewPages()
 
-	// startEdit mở overlay sửa giá trị cho dòng dữ liệu, hoặc kích hoạt OnAction
-	// nếu đây là dòng nút hành động (VD: "Thêm đích đến").
 	startEdit = func(rowIdx int) {
 		if rowIdx < 0 || rowIdx >= len(rows) {
 			return
@@ -219,6 +212,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 				}
 				r.Set(newVal)
 				redrawRow(rowIdx)
+				persist() // Đã có hàm persist() xử lý
 				statusView.SetText("")
 			}
 			closeEdit()
@@ -244,7 +238,6 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 		startEdit(row)
 	})
 
-	// Double-click detection: so sánh thời điểm + dòng giữa 2 lần click liên tiếp.
 	var lastClickTime time.Time
 	lastClickRow := -1
 	table.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
@@ -262,7 +255,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 		return action, event
 	})
 
-	rebuildTable() // Dựng bảng lần đầu.
+	rebuildTable()
 
 	buttonBar := tview.NewForm().SetButtonsAlign(tview.AlignLeft)
 	buttonBar.AddButton("Copy dòng đang chọn", copySelected)
@@ -290,9 +283,6 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback
 
 	rootPages.AddPage("main", mainLayout, true, true)
 
-	// lock chặn cả chỉnh sửa dữ liệu lẫn thêm đích mới (locked được check ở cả
-	// startEdit và bên trong OnAction), vẫn cho phép Copy — tránh race trên các
-	// field không atomic (URL, Consumers.List) khi pipeline đã bắt đầu đọc chúng.
 	lock := func() {
 		locked = true
 		table.SetTitle(" Configuration (locked) ")

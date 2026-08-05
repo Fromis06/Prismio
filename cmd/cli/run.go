@@ -21,8 +21,7 @@ import (
 
 	// Đăng ký các Driver (Provider và Consumer) — không phụ thuộc vào
 	// việc cmd/server có được import cùng lúc hay không.
-	_ "my-cdc/internal/capture/postgres"
-	_ "my-cdc/internal/sinks/postgres"
+	_ "my-cdc/internal/drivers"
 )
 
 func Run() {
@@ -30,11 +29,9 @@ func Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tuiApp := tview.NewApplication()
-	pages := tview.NewPages() // This line was missing in the original context, but it's implied by `pages.HidePage("error")` etc
+	pages := tview.NewPages()
 
-	// Ghi log ra cả stdout lẫn panel log của dashboard, để bấm "Run CDC"
-	// là log Bootstrap/checkpoint/sink hiện ngay trong TUI, không cần
-	// chờ tick refresh hay xem terminal ngầm (bị TUI chiếm màn hình).
+	// Ghi log ra cả stdout lẫn panel log của dashboard
 	dashboard := NewDashboard(tuiApp)
 
 	const configPath = "config.yaml"
@@ -42,28 +39,26 @@ func Run() {
 	// --- PHA 1: Chỉ load cấu hình, không có side-effect ---
 	cfg := config.NewDefaultConfig()
 
-	// Ghi đè HashedAPIKey từ file config.yaml nếu có
-	if overrides, err := config.LoadOverrides(configPath); err == nil && len(overrides.Monitor.HashedAPIKeys) > 0 {
+	// Nạp toàn bộ cấu hình (nguồn, danh sách đích, hiệu năng, API key...) từ config.yaml nếu có.
+	if overrides, err := config.LoadOverrides(configPath); err == nil {
 		absPath, _ := filepath.Abs(configPath)
-		slog.Info("Loaded API keys from override file", "path", absPath)
-		cfg.Monitor.HashedAPIKeys = overrides.Monitor.HashedAPIKeys
+		slog.Info("Loaded configuration from file", "path", absPath)
+		overrides.ApplyTo(cfg)
+
+		// Ghi lại theo format đầy đủ mới — tự động migrate file cũ (chỉ có hashed_api_keys)
+		// sang schema mới ngay lần chạy đầu tiên.
+		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
+			slog.Warn("Failed to normalize config.yaml to new format", "error", saveErr)
+		}
 	} else {
-		// Nếu file config.yaml không tồn tại hoặc rỗng, tạo file mới với key mặc định
+		// File chưa tồn tại (lần chạy đầu) hoặc không đọc được: tạo file mới từ giá trị mặc định.
 		absPath, _ := filepath.Abs(configPath)
-		slog.Info("config.yaml not found or empty, creating with default key.", "path", absPath)
-		var newOverrides config.OverrideConfig
-		newOverrides.Monitor.HashedAPIKeys = make(map[string]string)
-		// Copy default keys to new overrides
-		newOverrides.Monitor.HashedAPIKeys = cfg.Monitor.HashedAPIKeys
-		if saveErr := config.SaveOverrides(configPath, &newOverrides); saveErr != nil {
+		slog.Info("config.yaml not found or unreadable, creating with defaults.", "path", absPath, "error", err)
+		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
 			slog.Error("Failed to save initial config.yaml", "error", saveErr)
 		}
 	}
 
-	// cdcAppRef holds *app.Application behind an atomic pointer because it's
-	// written once from the Bootstrap goroutine but read concurrently from
-	// the OS-signal shutdown goroutine (and potentially from dashboard live
-	// updates). A plain `var cdcApp *app.Application` is a data race.
 	var cdcAppRef atomic.Pointer[app.Application]
 
 	errorModal := tview.NewModal().
@@ -98,7 +93,7 @@ func Run() {
 
 		if exists && storedUsername == username {
 			slog.Info("TUI: API Key validated successfully.", "username", username)
-			pages.SwitchToPage("config") // Chuyển đến trang config sau khi login thành công
+			pages.SwitchToPage("config")
 		} else {
 			slog.Warn("TUI: Failed login attempt.", "username", username)
 			pages.ShowPage("error")
@@ -115,18 +110,9 @@ func Run() {
 	createUserAndKey := func() {
 		username := createUserForm.GetFormItem(0).(*tview.InputField).GetText()
 		if username == "" {
-			// Có thể thêm modal báo lỗi ở đây nếu muốn
 			return
 		}
 
-		// Kiểm tra xem username đã tồn tại chưa.
-		// LƯU Ý: hàm này (createUserAndKey) là callback của nút "Create",
-		// nên nó đã chạy TRÊN chính UI goroutine (main loop của tview).
-		// Gọi tuiApp.QueueUpdateDraw() ở đây sẽ deadlock: QueueUpdateDraw
-		// đẩy việc vào queue rồi chờ main loop xử lý, nhưng main loop lúc
-		// này đang bận chạy chính callback đang gọi nó -> tự khoá chính mình,
-		// modal không bao giờ hiện và cả app bị đơ. Vì đã ở sẵn UI goroutine,
-		// chỉ cần gọi thẳng pages.ShowPage(...).
 		for _, existingUsername := range cfg.Monitor.HashedAPIKeys {
 			if existingUsername == username {
 				pages.ShowPage("usernameExists")
@@ -140,19 +126,15 @@ func Run() {
 			return
 		}
 
-		var newOverrides config.OverrideConfig
-		if existingOverrides, err := config.LoadOverrides(configPath); err == nil {
-			newOverrides = *existingOverrides
-		}
+		// Chụp snapshot từ cfg đang sống — để không bỏ sót các đích vừa thêm qua UI mà chưa kịp lưu
+		newOverrides := config.FromAppConfig(cfg)
 		if newOverrides.Monitor.HashedAPIKeys == nil {
 			newOverrides.Monitor.HashedAPIKeys = make(map[string]string)
 		}
-
-		// Lưu username làm value cho key đã hash
 		newOverrides.Monitor.HashedAPIKeys[hashedKey] = username
 
 		absPath, _ := filepath.Abs(configPath)
-		if err := config.SaveOverrides(configPath, &newOverrides); err != nil {
+		if err := config.SaveOverrides(configPath, newOverrides); err != nil {
 			slog.Error("Failed to save new API key to config file", "path", absPath, "error", err)
 			return
 		}
@@ -160,7 +142,7 @@ func Run() {
 		cfg.Monitor.HashedAPIKeys = newOverrides.Monitor.HashedAPIKeys
 		slog.Info("Successfully generated and saved new API key", "path", absPath, "username", username)
 
-		// Hiển thị key (mật khẩu) cho người dùng
+		// Hiển thị key cho người dùng
 		keyDisplayForm := tview.NewForm().
 			AddTextView("Username", username, 0, 1, true, false).
 			AddInputField("API Key (Password)", rawKey, len(rawKey)+5, nil, nil)
@@ -185,41 +167,34 @@ func Run() {
 	centeredCreateUserForm := tview.NewFlex().AddItem(nil, 0, 1, false).AddItem(tview.NewFlex().SetDirection(tview.FlexRow).AddItem(nil, 0, 1, false).AddItem(createUserForm, 0, 2, true).AddItem(nil, 0, 1, false), 0, 1, true).AddItem(nil, 0, 1, false)
 
 	createKeyCallback := func() {
-		createUserForm.GetFormItem(0).(*tview.InputField).SetText("") // Xóa username cũ
+		createUserForm.GetFormItem(0).(*tview.InputField).SetText("")
 		pages.SwitchToPage("createUser")
 	}
 
-	// configFormLock được gán bên dưới sau khi NewConfigForm được gọi.
 	var configFormLock func()
 
 	runCdcCallback := func() {
-		// Hiển thị một modal "đang xử lý" để người dùng biết
 		modal := tview.NewModal().SetText("Initializing CDC... Please wait.")
 		pages.AddPage("running", modal, true, true)
 		pages.ShowPage("running")
 
-		// Khoá form cấu hình ngay lập tức: từ giờ Source URL / Destination URL
-		// sẽ được đọc bởi goroutine Bootstrap/Listener, không nên còn cho phép
-		// chỉnh sửa đồng thời từ UI thread.
 		if configFormLock != nil {
 			configFormLock()
 		}
 
-		// --- PHA 2: Chạy Bootstrap trong một goroutine để không block UI ---
+		// --- PHA 2: Chạy Bootstrap trong goroutine ---
 		go func() {
 			newApp, err := app.Bootstrap(ctx, cfg)
 			if err != nil {
-				// Nếu lỗi, cập nhật UI trên main thread để báo lỗi
 				tuiApp.QueueUpdateDraw(func() {
-				pages.HidePage("running")
-				dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
-				pages.SwitchToPage("dashboard")
+					pages.HidePage("running")
+					dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
+					pages.SwitchToPage("dashboard")
 				})
 				return
 			}
 			cdcAppRef.Store(newApp)
 
-			// Bootstrap thành công, khởi chạy các tiến trình nền
 			newApp.MultiSink.Start()
 			go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
 			newApp.AutoTuner.Start()
@@ -227,11 +202,9 @@ func Run() {
 			go func() {
 				if err := newApp.Listener.Start(ctx, newApp.Config.Provider.Source.URL, newApp.GlobalState); err != nil && err != context.Canceled {
 					slog.Error("Capture stream unexpectedly interrupted", "error", err)
-					// Có thể gửi tín hiệu để dừng ứng dụng ở đây nếu muốn
 				}
 			}()
 
-			// Cập nhật UI để chuyển sang dashboard và bắt đầu cập nhật dữ liệu live
 			tuiApp.QueueUpdateDraw(func() {
 				pages.HidePage("running")
 				dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
@@ -241,7 +214,8 @@ func Run() {
 	}
 
 	loginForm := NewLoginForm(tuiApp, loginAttemptCallback, createKeyCallback)
-	configForm, lockConfigForm := NewConfigForm(tuiApp, cfg, runCdcCallback)
+	// Truyền thêm configPath vào NewConfigForm
+	configForm, lockConfigForm := NewConfigForm(tuiApp, cfg, configPath, runCdcCallback)
 	configFormLock = lockConfigForm
 
 	pages.AddPage("login", loginForm, true, true)
@@ -258,11 +232,11 @@ func Run() {
 	go func() {
 		<-sigChan
 		slog.Info("Received stop signal, starting shutdown process")
-		cancel() // Ra hiệu lệnh dừng cho các goroutine
+		cancel()
 		if runningApp := cdcAppRef.Load(); runningApp != nil {
-			runningApp.Shutdown() // Lưu checkpoint
+			runningApp.Shutdown()
 		}
-		tuiApp.Stop() // Dừng TUI
+		tuiApp.Stop()
 	}()
 
 	if err := tuiApp.SetRoot(pages, true).EnableMouse(true).Run(); err != nil {
