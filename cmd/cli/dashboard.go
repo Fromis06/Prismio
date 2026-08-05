@@ -3,142 +3,91 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
 
 	"my-cdc/internal/app"
 
 	"github.com/rivo/tview"
 )
-// Dashboard giữ tham chiếu tới các panel để có thể cập nhật "sống" (live)
-// từ một goroutine nền, thay vì chỉ là layout tĩnh.
+
+// Dashboard đóng gói layout cùng tham chiếu tới các panel cần cập nhật live,
+// để StartLiveUpdates có thể ghi vào đúng chỗ mà không cần biết cấu trúc Flex bên ngoài.
 type Dashboard struct {
-	Layout *tview.Flex
-
-	statusPanel     *tview.TextView
-	connectionPanel *tview.TextView
-	tuningPanel     *tview.Table
-	logPanel        *tview.TextView
-
-	tuiApp *tview.Application
-
-	startedAt                          time.Time
-	lastInsert, lastUpdate, lastDelete int64
+	Layout      *tview.Flex
+	statusPanel *tview.TextView
+	logPanel    *tview.TextView
 }
 
-// NewDashboard chỉ dựng layout tĩnh, chưa cần Application vì lúc TUI khởi
-// động app chưa Bootstrap xong. Dữ liệu thật được đổ vào sau qua StartLiveUpdates.
+// NewDashboard tạo layout dashboard. Được gọi trước khi Bootstrap xong,
+// nên chưa cần *app.Application ở đây — dữ liệu sống sẽ được nạp qua StartLiveUpdates.
 func NewDashboard(tuiApp *tview.Application) *Dashboard {
-	d := &Dashboard{tuiApp: tuiApp}
+	statusPanel := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText("Đang khởi động...")
+	statusPanel.SetBorder(true).SetTitle(" System Status ")
 
-	d.statusPanel = tview.NewTextView().SetDynamicColors(true).
-		SetText("Waiting for pipeline to start...")
-	d.statusPanel.SetBorder(true).SetTitle(" System Status ")
+	logPanel := tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetChangedFunc(func() { tuiApp.Draw() })
+	logPanel.SetBorder(true).SetTitle(" Logs ")
 
-	d.connectionPanel = tview.NewTextView().SetDynamicColors(true)
-	d.connectionPanel.SetBorder(true).SetTitle(" Connectivity ")
+	layout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(statusPanel, 5, 0, false). // Chiều cao cố định 5 dòng, đủ cho 3 chỉ số
+		AddItem(logPanel, 0, 1, true)      // Phần còn lại dành cho log, có focus
 
-	d.tuningPanel = tview.NewTable().SetBorders(true)
-	d.tuningPanel.SetBorder(true).SetTitle(" Live Tuning ")
-	d.tuningPanel.SetCell(0, 0, tview.NewTableCell("Parameter").SetSelectable(false))
-	d.tuningPanel.SetCell(0, 1, tview.NewTableCell("Value").SetSelectable(false))
-
-	d.logPanel = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	d.logPanel.SetBorder(true).SetTitle(" Activity / Logs ")
-
-	// TextView.Write is safe to call from any goroutine (unlike most other
-	// tview methods). SetChangedFunc fires after each write and is the
-	// documented way to trigger a redraw from a background goroutine —
-	// e.g. slog writing here from the Bootstrap goroutine.
-	d.logPanel.SetChangedFunc(func() {
-		d.logPanel.ScrollToEnd()
-		d.tuiApp.Draw()
-	})
-
-	leftColumn := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(d.statusPanel, 0, 1, false).
-		AddItem(d.connectionPanel, 0, 1, false)
-
-	mainContent := tview.NewFlex().
-		AddItem(leftColumn, 0, 1, false).
-		AddItem(d.tuningPanel, 0, 1, false)
-
-	d.Layout = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(mainContent, 0, 3, false).
-		AddItem(d.logPanel, 0, 1, true)
-
-	return d
+	return &Dashboard{
+		Layout:      layout,
+		statusPanel: statusPanel,
+		logPanel:    logPanel,
+	}
 }
 
-// StartLiveUpdates chạy một goroutine nền đọc số liệu từ Application theo
-// chu kỳ `interval` và vẽ lại UI qua QueueUpdateDraw (bắt buộc phải dùng
-// hàm này khi cập nhật tview từ goroutine khác UI thread). Tự dừng khi ctx
-// bị cancel (app shutdown).
+// LogWriter trả về io.Writer để logger có thể ghi trực tiếp vào logPanel
+// thay vì os.Stdout (vốn bị tview chiếm dụng).
+func (d *Dashboard) LogWriter() *tview.TextView {
+	return d.logPanel
+}
+
+// StartLiveUpdates chạy một goroutine nền, định kỳ tính EPS, runtime, tổng số event
+// từ EventsCount và cập nhật statusPanel. Dừng khi ctx bị cancel (graceful shutdown).
 func (d *Dashboard) StartLiveUpdates(ctx context.Context, tuiApp *tview.Application, cdcApp *app.Application, interval time.Duration) {
+	startTime := time.Now()
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+
+		var lastInsert, lastUpdate, lastDelete int64
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+
 			case <-ticker.C:
-				ins := cdcApp.EventsCount.InsertCount.Load()
-				upd := cdcApp.EventsCount.UpdateCount.Load()
+				insert := cdcApp.EventsCount.InsertCount.Load()
+				update := cdcApp.EventsCount.UpdateCount.Load()
 				del := cdcApp.EventsCount.DeleteCount.Load()
-				minLSN := cdcApp.GlobalState.GetMinCheckpoint()
+				total := insert + update + del
+
+				deltaTotal := (insert - lastInsert) + (update - lastUpdate) + (del - lastDelete)
+				eps := float64(deltaTotal) / interval.Seconds()
+
+				lastInsert, lastUpdate, lastDelete = insert, update, del
+				elapsed := time.Since(startTime).Round(time.Second)
+
+				// Mọi thay đổi UI phải qua QueueUpdateDraw vì đang ở goroutine nền,
+				// không phải main loop của tview.
 				tuiApp.QueueUpdateDraw(func() {
-					d.statusPanel.SetText(fmt.Sprintf("Insert: %d\nUpdate: %d\nDelete: %d\nMinLSN: %d", ins, upd, del, minLSN))
+					d.statusPanel.SetText(fmt.Sprintf(
+						"[yellow]EPS:[-]           %.0f\n"+
+							"[yellow]Runtime:[-]       %s\n"+
+							"[yellow]Total Events:[-]  %d  [gray](Insert: %d | Update: %d | Delete: %d)[-]",
+						eps, elapsed, total, insert, update, del,
+					))
 				})
 			}
 		}
 	}()
-}
-
-func (d *Dashboard) refresh(cdcApp *app.Application, interval time.Duration) {
-	insert := cdcApp.EventsCount.InsertCount.Load()
-	update := cdcApp.EventsCount.UpdateCount.Load()
-	del := cdcApp.EventsCount.DeleteCount.Load()
-	total := insert + update + del
-
-	deltaTotal := (insert - d.lastInsert) + (update - d.lastUpdate) + (del - d.lastDelete)
-	eps := float64(deltaTotal) / interval.Seconds()
-	d.lastInsert, d.lastUpdate, d.lastDelete = insert, update, del
-
-	minLSN := cdcApp.GlobalState.GetMinCheckpoint()
-	activeSinks := cdcApp.GlobalState.ActiveSinks()
-	uptime := time.Since(d.startedAt).Round(time.Second)
-
-	statusText := fmt.Sprintf(
-		"[green]Running[-]\nUptime: %s\nEPS: %.0f\nTotal events: %d (I:%d U:%d D:%d)\nMin checkpoint (LSN): %d",
-		uptime, eps, total, insert, update, del, minLSN,
-	)
-
-	connText := fmt.Sprintf("Source: %s\n\nActive sinks (%d):\n",
-		cdcApp.Config.Provider.Source.Name, len(activeSinks))
-	for _, s := range activeSinks {
-		connText += fmt.Sprintf(" - %s\n", s)
-	}
-
-	d.tuiApp.QueueUpdateDraw(func() {
-		d.statusPanel.SetText(statusText)
-		d.connectionPanel.SetText(connText)
-
-		d.tuningPanel.SetCell(1, 0, tview.NewTableCell("Workers"))
-		d.tuningPanel.SetCell(1, 1, tview.NewTableCell(fmt.Sprintf("%d", cdcApp.Config.DataProcessing.DataProcessingWorkerCount.Load())))
-		d.tuningPanel.SetCell(2, 0, tview.NewTableCell("Batch Size"))
-		d.tuningPanel.SetCell(2, 1, tview.NewTableCell(fmt.Sprintf("%d", cdcApp.Config.Batch.BatchMaxSize.Load())))
-		d.tuningPanel.SetCell(3, 0, tview.NewTableCell("Batch Timeout (ms)"))
-		d.tuningPanel.SetCell(3, 1, tview.NewTableCell(fmt.Sprintf("%d", cdcApp.Config.Batch.BatchTimeout.Load())))
-		d.tuningPanel.SetCell(4, 0, tview.NewTableCell("Bag Max Size"))
-		d.tuningPanel.SetCell(4, 1, tview.NewTableCell(fmt.Sprintf("%d", cdcApp.Config.Bag.BagMaxSize.Load())))
-
-		fmt.Fprintf(d.logPanel, "[gray]%s[-] eps=%.0f total=%d min_lsn=%d\n",
-			time.Now().Format("15:04:05"), eps, total, minLSN)
-	})
-}
-// Writer exposes the log panel as an io.Writer so slog (or anything else)
-// can stream output directly into the TUI.
-func (d *Dashboard) Writer() io.Writer {
-	return d.logPanel
 }

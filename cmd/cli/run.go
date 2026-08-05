@@ -211,9 +211,9 @@ func Run() {
 			if err != nil {
 				// Nếu lỗi, cập nhật UI trên main thread để báo lỗi
 				tuiApp.QueueUpdateDraw(func() {
-					pages.HidePage("running")
-					dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second) // This line was already correct in the context, but the error message indicated it was missing tuiApp. Re-checking the original prompt, the error was on line 240, not 237. Let's fix the other call.
-					pages.SwitchToPage("dashboard")
+				pages.HidePage("running")
+				dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
+				pages.SwitchToPage("dashboard")
 				})
 				return
 			}

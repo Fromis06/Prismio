@@ -1,115 +1,302 @@
 package cli
 
 import (
-	"my-cdc/internal/config"
+	"fmt"
 	"strconv"
+	"time"
 
+	"my-cdc/internal/config"
+
+	"github.com/atotto/clipboard"
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
-// NewConfigForm tạo một form để chỉnh sửa các cấu hình chính trước khi chạy.
-// Nó trả về layout để hiển thị, và một hàm `lock` mà caller có thể gọi
-// sau khi CDC đã khởi chạy để khoá form lại, tránh việc người dùng
-// sửa cấu hình (URL, worker count, ...) trong khi pipeline đang chạy
-// và đọc các giá trị đó (race condition trên cfg.Provider.Source.URL, v.v.).
-func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback func()) (*tview.Flex, func()) {
-	form := tview.NewForm().
-		SetFieldBackgroundColor(tview.Styles.PrimitiveBackgroundColor).
-		SetFieldTextColor(tview.Styles.PrimaryTextColor)
+// configRow đại diện cho một dòng trong bảng cấu hình.
+// IsAction=true đánh dấu dòng nút hành động (VD: "Thêm đích đến") thay vì dòng dữ liệu thông thường.
+type configRow struct {
+	Label    string
+	Get      func() string
+	Validate func(newVal string) error
+	Set      func(newVal string)
+	IsAction bool
+	OnAction func()
+}
 
-	// Thêm các trường vào form, bind với giá trị từ cfg
-	form.AddInputField("Source URL", cfg.Provider.Source.URL, 0, nil, func(text string) {
-		cfg.Provider.Source.URL = text
-	})
+// NewConfigForm tạo bảng cấu hình với danh sách Destination URL động:
+// số dòng đích phụ thuộc vào cfg.Consumers.List, và có một dòng nút
+// "→ Thêm đích đến mới" luôn nằm ngay sau đích cuối cùng để chèn thêm consumer mới.
+func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, runCallback func()) (tview.Primitive, func()) {
+	table := tview.NewTable().SetSelectable(true, false)
+	table.SetBorder(true).SetTitle(" Configuration ")
 
-	// Giả sử chỉ có 1 consumer để đơn giản hóa
-	if len(cfg.Consumers.List) > 0 {
-		form.AddInputField("Destination URL", cfg.Consumers.List[0].URL, 0, nil, func(text string) {
-			cfg.Consumers.List[0].URL = text
+	statusView := tview.NewTextView().SetDynamicColors(true)
+
+	locked := false
+	var rows []configRow
+
+	var buildRows func()
+	var rebuildTable func()
+	var startEdit func(rowIdx int)
+
+	// buildRows dựng lại toàn bộ danh sách dòng dựa trên trạng thái hiện tại của cfg.
+	// Được gọi lại mỗi khi số lượng đích thay đổi (sau khi bấm "Thêm đích đến").
+	buildRows = func() {
+		newRows := []configRow{
+			{
+				Label: "Source URL",
+				Get:   func() string { return cfg.Provider.Source.URL },
+				Set:   func(v string) { cfg.Provider.Source.URL = v },
+			},
+		}
+
+		// Một dòng cho mỗi consumer hiện có — số lượng hoàn toàn động.
+		for i := range cfg.Consumers.List {
+			idx := i // Go 1.22+ đã per-iteration, nhưng khai báo tường minh cho rõ ý.
+			label := "Destination URL"
+			if idx > 0 {
+				label = fmt.Sprintf("Destination URL %d", idx+1)
+			}
+			newRows = append(newRows, configRow{
+				Label: label,
+				Get:   func() string { return cfg.Consumers.List[idx].URL },
+				Set:   func(v string) { cfg.Consumers.List[idx].URL = v },
+			})
+		}
+
+		// Dòng nút "Thêm đích đến" luôn ở cuối danh sách Destination URL,
+		// đúng vị trí "cuối chuỗi" mà người dùng cần.
+		newRows = append(newRows, configRow{
+			Label:    "     →  Thêm đích đến mới",
+			IsAction: true,
+			Get:      func() string { return "" },
+			OnAction: func() {
+				if locked {
+					return
+				}
+				n := len(cfg.Consumers.List) + 1
+				cfg.Consumers.List = append(cfg.Consumers.List, config.DBConnection{
+					Name:     fmt.Sprintf("postgres_dest_%d", n),
+					Type:     "postgres",
+					URL:      "",
+					IsActive: true,
+				})
+				// Row 0 = Source URL, row 1..N = destinations => dòng đích vừa thêm nằm ở
+				// index = len(Consumers.List) sau khi append (1-based do có Source URL ở đầu).
+				newDestRowIdx := len(cfg.Consumers.List)
+				rebuildTable()
+				table.Select(newDestRowIdx, 0)
+				startEdit(newDestRowIdx) // Mở luôn ô nhập để gõ URL ngay, không cần double-click thêm.
+			},
 		})
+
+		newRows = append(newRows,
+			configRow{
+				Label: "Worker Count",
+				Get:   func() string { return strconv.Itoa(int(cfg.DataProcessing.DataProcessingWorkerCount.Load())) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 32)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Worker Count phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 32)
+					cfg.DataProcessing.DataProcessingWorkerCount.Store(int32(n))
+				},
+			},
+			configRow{
+				Label: "Batch Size",
+				Get:   func() string { return strconv.FormatInt(cfg.Batch.BatchMaxSize.Load(), 10) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Batch Size phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 64)
+					cfg.Batch.BatchMaxSize.Store(n)
+				},
+			},
+			configRow{
+				Label: "Batch Timeout (ms)",
+				Get:   func() string { return strconv.FormatInt(cfg.Batch.BatchTimeout.Load(), 10) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Batch Timeout phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 64)
+					cfg.Batch.BatchTimeout.Store(n)
+				},
+			},
+		)
+
+		rows = newRows
 	}
 
-	// statusView hiển thị lỗi validate (vd: nhập số không hợp lệ) thay vì
-	// âm thầm ghi đè giá trị cấu hình bằng 0.
-	statusView := tview.NewTextView().
-		SetDynamicColors(true).
-		SetText("")
-
-	form.AddInputField("Worker Count", strconv.Itoa(int(cfg.DataProcessing.DataProcessingWorkerCount.Load())), 10, tview.InputFieldInteger, func(text string) {
-		val, err := strconv.ParseInt(text, 10, 32)
-		if err != nil || val <= 0 {
-			statusView.SetText("[red]Worker Count phải là số nguyên dương.[-]")
-			return // KHÔNG ghi đè giá trị hiện tại bằng 0
+	redrawRow := func(i int) {
+		r := rows[i]
+		labelColor := tcell.ColorYellow
+		valueText := r.Get()
+		if r.IsAction {
+			labelColor = tcell.ColorAqua
+			valueText = "(Enter / double-click)"
 		}
-		statusView.SetText("")
-		cfg.DataProcessing.DataProcessingWorkerCount.Store(int32(val))
-	})
+		table.SetCell(i, 0, tview.NewTableCell(r.Label).
+			SetTextColor(labelColor).
+			SetSelectable(true).
+			SetExpansion(1))
+		table.SetCell(i, 1, tview.NewTableCell(valueText).
+			SetTextColor(tcell.ColorWhite).
+			SetSelectable(true).
+			SetExpansion(4))
+	}
 
-	form.AddInputField("Batch Size", strconv.Itoa(int(cfg.Batch.BatchMaxSize.Load())), 10, tview.InputFieldInteger, func(text string) {
-		val, err := strconv.ParseInt(text, 10, 64)
-		if err != nil || val <= 0 {
-			statusView.SetText("[red]Batch Size phải là số nguyên dương.[-]")
+	rebuildTable = func() {
+		buildRows()
+		table.Clear()
+		for i := range rows {
+			redrawRow(i)
+		}
+	}
+
+	copySelected := func() {
+		row, _ := table.GetSelection()
+		if row < 0 || row >= len(rows) || rows[row].IsAction {
+			statusView.SetText("[yellow]Dòng này không có giá trị để copy[-]")
 			return
 		}
-		statusView.SetText("")
-		cfg.Batch.BatchMaxSize.Store(val)
-	})
-
-	form.AddInputField("Batch Timeout (ms)", strconv.Itoa(int(cfg.Batch.BatchTimeout.Load())), 10, tview.InputFieldInteger, func(text string) {
-		val, err := strconv.ParseInt(text, 10, 64)
-		if err != nil || val <= 0 {
-			statusView.SetText("[red]Batch Timeout phải là số nguyên dương.[-]")
+		val := rows[row].Get()
+		if err := clipboard.WriteAll(val); err != nil {
+			statusView.SetText(fmt.Sprintf("[red]Copy thất bại: %v[-]", err))
 			return
 		}
-		statusView.SetText("")
-		cfg.Batch.BatchTimeout.Store(val)
+		statusView.SetText(fmt.Sprintf("[green]Đã copy: %s[-]", rows[row].Label))
+	}
+
+	rootPages := tview.NewPages()
+
+	// startEdit mở overlay sửa giá trị cho dòng dữ liệu, hoặc kích hoạt OnAction
+	// nếu đây là dòng nút hành động (VD: "Thêm đích đến").
+	startEdit = func(rowIdx int) {
+		if rowIdx < 0 || rowIdx >= len(rows) {
+			return
+		}
+		r := rows[rowIdx]
+		if r.IsAction {
+			r.OnAction()
+			return
+		}
+		if locked {
+			return
+		}
+
+		input := tview.NewInputField().
+			SetLabel(r.Label + ": ").
+			SetText(r.Get()).
+			SetFieldWidth(0)
+
+		closeEdit := func() {
+			rootPages.RemovePage("edit")
+			tuiApp.SetFocus(table)
+		}
+
+		input.SetDoneFunc(func(key tcell.Key) {
+			if key == tcell.KeyEnter {
+				newVal := input.GetText()
+				if r.Validate != nil {
+					if err := r.Validate(newVal); err != nil {
+						statusView.SetText(fmt.Sprintf("[red]%v[-]", err))
+						return
+					}
+				}
+				r.Set(newVal)
+				redrawRow(rowIdx)
+				statusView.SetText("")
+			}
+			closeEdit()
+		})
+
+		box := tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(input, 1, 0, true)
+		box.SetBorder(true).SetTitle(" Sửa giá trị — Enter: lưu, Esc: huỷ ")
+
+		overlay := tview.NewFlex().
+			AddItem(nil, 0, 1, false).
+			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+				AddItem(nil, 0, 1, false).
+				AddItem(box, 3, 0, true).
+				AddItem(nil, 0, 1, false), 0, 3, true).
+			AddItem(nil, 0, 1, false)
+
+		rootPages.AddPage("edit", overlay, true, true)
+		tuiApp.SetFocus(input)
+	}
+
+	table.SetSelectedFunc(func(row, col int) {
+		startEdit(row)
 	})
 
-	// running ngăn người dùng bấm "Run CDC" nhiều lần liên tiếp
-	// (mỗi lần bấm sẽ spawn thêm goroutine Bootstrap).
+	// Double-click detection: so sánh thời điểm + dòng giữa 2 lần click liên tiếp.
+	var lastClickTime time.Time
+	lastClickRow := -1
+	table.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			row, _ := table.GetSelection()
+			now := time.Now()
+			if row == lastClickRow && now.Sub(lastClickTime) < 400*time.Millisecond {
+				startEdit(row)
+				lastClickRow = -1
+			} else {
+				lastClickRow = row
+				lastClickTime = now
+			}
+		}
+		return action, event
+	})
+
+	rebuildTable() // Dựng bảng lần đầu.
+
+	buttonBar := tview.NewForm().SetButtonsAlign(tview.AlignLeft)
+	buttonBar.AddButton("Copy dòng đang chọn", copySelected)
+
 	running := false
-
-	runButtonLabel := "Run CDC"
-	form.AddButton(runButtonLabel, func() {
+	const runButtonLabel = "Run CDC"
+	buttonBar.AddButton(runButtonLabel, func() {
 		if running {
 			return
 		}
 		running = true
-		// Đổi label để người dùng biết đã bấm và không cần bấm lại.
-		if btn := form.GetButton(form.GetButtonIndex(runButtonLabel)); btn != nil {
+		if btn := buttonBar.GetButton(buttonBar.GetButtonIndex(runButtonLabel)); btn != nil {
 			btn.SetLabel("Starting...")
 		}
 		runCallback()
 	})
-	form.AddButton("Quit", func() {
+	buttonBar.AddButton("Quit", func() {
 		tuiApp.Stop()
 	})
 
-	form.SetBorder(true).SetTitle("Configuration").SetTitleAlign(tview.AlignLeft)
-
-	formArea := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(form, 0, 1, true).
+	mainLayout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(table, 0, 1, true).
+		AddItem(buttonBar, 3, 0, false).
 		AddItem(statusView, 1, 0, false)
 
-	// Center the form
-	flex := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(formArea, 0, 8, true).
-			AddItem(nil, 0, 1, false), 0, 3, true).
-		AddItem(nil, 0, 1, false)
+	rootPages.AddPage("main", mainLayout, true, true)
 
-	// lock disable toàn bộ các trường input để tránh sửa cấu hình
-	// (đặc biệt là 2 URL, vốn là string thường, không atomic) sau khi
-	// pipeline đã bắt đầu đọc chúng từ goroutine khác.
+	// lock chặn cả chỉnh sửa dữ liệu lẫn thêm đích mới (locked được check ở cả
+	// startEdit và bên trong OnAction), vẫn cho phép Copy — tránh race trên các
+	// field không atomic (URL, Consumers.List) khi pipeline đã bắt đầu đọc chúng.
 	lock := func() {
-		for i := 0; i < form.GetFormItemCount(); i++ {
-			if field, ok := form.GetFormItem(i).(*tview.InputField); ok {
-				field.SetDisabled(true)
-			}
-		}
+		locked = true
+		table.SetTitle(" Configuration (locked) ")
 	}
 
-	return flex, lock
+	return rootPages, lock
 }
