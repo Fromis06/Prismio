@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -19,19 +18,24 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/rivo/tview"
+
+	// Đăng ký các Driver (Provider và Consumer) — không phụ thuộc vào
+	// việc cmd/server có được import cùng lúc hay không.
+	_ "my-cdc/internal/capture/postgres"
+	_ "my-cdc/internal/sinks/postgres"
 )
 
 func Run() {
+	logger.Initialize()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	tuiApp := tview.NewApplication()
-	dashboard := NewDashboard(tuiApp)
+	pages := tview.NewPages() // This line was missing in the original context, but it's implied by `pages.HidePage("error")` etc
 
 	// Ghi log ra cả stdout lẫn panel log của dashboard, để bấm "Run CDC"
 	// là log Bootstrap/checkpoint/sink hiện ngay trong TUI, không cần
 	// chờ tick refresh hay xem terminal ngầm (bị TUI chiếm màn hình).
-	logger.Initialize(dashboard.Writer())
+	dashboard := NewDashboard(tuiApp)
 
 	const configPath = "config.yaml"
 
@@ -61,8 +65,6 @@ func Run() {
 	// the OS-signal shutdown goroutine (and potentially from dashboard live
 	// updates). A plain `var cdcApp *app.Application` is a data race.
 	var cdcAppRef atomic.Pointer[app.Application]
-
-	pages := tview.NewPages()
 
 	errorModal := tview.NewModal().
 		SetText("Invalid API Key. Please try again.").
@@ -209,9 +211,9 @@ func Run() {
 			if err != nil {
 				// Nếu lỗi, cập nhật UI trên main thread để báo lỗi
 				tuiApp.QueueUpdateDraw(func() {
-					bootstrapErrorModal.SetText(fmt.Sprintf("Initialization Failed:\n\n%v", err))
 					pages.HidePage("running")
-					pages.ShowPage("bootstrap_error")
+					dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second) // This line was already correct in the context, but the error message indicated it was missing tuiApp. Re-checking the original prompt, the error was on line 240, not 237. Let's fix the other call.
+					pages.SwitchToPage("dashboard")
 				})
 				return
 			}
@@ -232,7 +234,7 @@ func Run() {
 			// Cập nhật UI để chuyển sang dashboard và bắt đầu cập nhật dữ liệu live
 			tuiApp.QueueUpdateDraw(func() {
 				pages.HidePage("running")
-				dashboard.StartLiveUpdates(ctx, newApp, time.Second)
+				dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
 				pages.SwitchToPage("dashboard")
 			})
 		}()

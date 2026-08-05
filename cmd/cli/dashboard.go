@@ -74,8 +74,7 @@ func NewDashboard(tuiApp *tview.Application) *Dashboard {
 // chu kỳ `interval` và vẽ lại UI qua QueueUpdateDraw (bắt buộc phải dùng
 // hàm này khi cập nhật tview từ goroutine khác UI thread). Tự dừng khi ctx
 // bị cancel (app shutdown).
-func (d *Dashboard) StartLiveUpdates(ctx context.Context, cdcApp *app.Application, interval time.Duration) {
-	d.startedAt = time.Now()
+func (d *Dashboard) StartLiveUpdates(ctx context.Context, tuiApp *tview.Application, cdcApp *app.Application, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -84,7 +83,13 @@ func (d *Dashboard) StartLiveUpdates(ctx context.Context, cdcApp *app.Applicatio
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				d.refresh(cdcApp, interval)
+				ins := cdcApp.EventsCount.InsertCount.Load()
+				upd := cdcApp.EventsCount.UpdateCount.Load()
+				del := cdcApp.EventsCount.DeleteCount.Load()
+				minLSN := cdcApp.GlobalState.GetMinCheckpoint()
+				tuiApp.QueueUpdateDraw(func() {
+					d.statusPanel.SetText(fmt.Sprintf("Insert: %d\nUpdate: %d\nDelete: %d\nMinLSN: %d", ins, upd, del, minLSN))
+				})
 			}
 		}
 	}()
