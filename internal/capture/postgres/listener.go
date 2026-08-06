@@ -47,6 +47,8 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 	if publicationNames == "" {
 		return fmt.Errorf("publication_names not specified in source URL")
 	}
+	delete(connConfig.RuntimeParams, "slot_name")
+	delete(connConfig.RuntimeParams, "publication_names")
 
 	var conn *pgconn.PgConn
 	err = utils.DoWithRetry(
