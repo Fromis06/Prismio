@@ -10,6 +10,12 @@ import (
 	"github.com/jackc/pglogrepl"
 )
 
+// sourceTypeName là tên định danh của driver này, khớp với DBConnection.Type
+// trong config ("postgres") và với tên đã capture.Register() ở init.go.
+// Một driver nguồn mới (VD: internal/capture/mysql) sẽ tự khai hằng số tương tự
+// trong file riêng của nó, không cần sửa gì ở đây.
+const sourceTypeName = "postgres"
+
 // Processor is responsible for parsing raw WAL packets,
 // converting them into a standardized ChangeEvent structure, and grouping them into a "bag".
 type Processor struct {
@@ -92,7 +98,7 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 
 		// Create a standardized event (ChangeEvent).
 		changeEvent := models.BuildChangeEvent(
-			pb.SourceType_SOURCE_POSTGRES,
+			sourceTypeName,
 			action,
 			rel.Namespace,
 			rel.RelationName,
@@ -124,7 +130,7 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 		} else {
 			// If the bag is empty, create a dummy event just to carry the checkpoint information.
 			p.bag = append(p.bag, models.BuildChangeEvent(
-				pb.SourceType_SOURCE_POSTGRES,
+				sourceTypeName,
 				pb.Action_COMMIT,
 				"", "", nil, nil, nil,
 				&pb.Checkpoint{Offset: &pb.Checkpoint_Lsn{Lsn: commitLSN}},

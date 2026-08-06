@@ -122,7 +122,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					// This prevents data loss in case the app is suddenly terminated (kill -9) without a graceful shutdown.
 					ckptData := models.CheckpointFileData{
 						InstanceName: l.Config.Provider.Source.Name,
-						SourceType:   pb.SourceType_SOURCE_POSTGRES,
+						SourceType:   sourceTypeName,
 						CheckpointData: &pb.Checkpoint{
 							Offset: &pb.Checkpoint_Lsn{Lsn: confirmedLSN},
 						},
@@ -131,25 +131,25 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					if errSave != nil {
 						slog.Warn("CAPTURE: Error saving periodic checkpoint to disk", "error", errSave)
 					}
-					} else {
+				} else {
 					slog.Warn("CAPTURE: Error sending StandbyStatusUpdate", "error", errUpdate)
-					}
-					}
-					default:
-					ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Second)
-					msg, err := conn.ReceiveMessage(ctxTimeout)
-					cancel()
-					if err != nil {
-					// If it's a timeout error, ignore it and continue the loop.
-					if pgconn.Timeout(err) {
+				}
+			}
+		default:
+			ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Second)
+			msg, err := conn.ReceiveMessage(ctxTimeout)
+			cancel()
+			if err != nil {
+				// If it's a timeout error, ignore it and continue the loop.
+				if pgconn.Timeout(err) {
 					continue
-					}
-					continue
-					}
+				}
+				continue
+			}
 
-					if cd, ok := msg.(*pgproto3.CopyData); ok {
-					switch cd.Data[0] {
-					case pglogrepl.PrimaryKeepaliveMessageByteID:
+			if cd, ok := msg.(*pgproto3.CopyData); ok {
+				switch cd.Data[0] {
+				case pglogrepl.PrimaryKeepaliveMessageByteID:
 					pkm, _ := pglogrepl.ParsePrimaryKeepaliveMessage(cd.Data[1:])
 					// Postgres requests a response to check if the connection is still alive.
 					if pkm.ReplyRequested {
@@ -163,7 +163,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 							WALApplyPosition: pglogrepl.LSN(confirmedLSN),
 						})
 					}
-					case pglogrepl.XLogDataByteID:
+				case pglogrepl.XLogDataByteID:
 					xld, err := pglogrepl.ParseXLogData(cd.Data[1:])
 					// This is the packet containing change data (INSERT, UPDATE, DELETE...).
 					if err != nil {
@@ -171,8 +171,8 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					}
 					currentLSN := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 					l.Processor.ProcessRawBytes(xld.WALData, currentLSN)
-					}
-					}
-					}
-					}
-					}
+				}
+			}
+		}
+	}
+}

@@ -14,8 +14,7 @@ import (
 	"my-cdc/internal/utils"
 
 	// Đăng ký các Driver (Provider và Consumer)
-	_ "my-cdc/internal/capture/postgres"
-	_ "my-cdc/internal/sinks/postgres"
+	_ "my-cdc/internal/drivers"
 )
 
 // Run starts the application in headless server mode.

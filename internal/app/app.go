@@ -35,7 +35,9 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 	eventsCount := &models.EventsCount{}
 	globalState := models.NewGlobalState()
 
-	sourceType := models.ParseSourceType(cfg.Provider.Source.Type)
+	// sourceType là chuỗi tự do lấy thẳng từ config (VD: "postgres"), khớp với
+	// tên driver đã Register() trong internal/drivers — không còn qua bước parse enum.
+	sourceType := cfg.Provider.Source.Type
 	instanceName := cfg.Provider.Source.Name
 
 	// 1. Phục hồi trạng thái (Load Checkpoint)
@@ -101,7 +103,7 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 
 // Shutdown thực hiện công việc lưu trạng thái (checkpoint) trước khi tắt ứng dụng.
 func (a *Application) Shutdown() {
-	sourceType := models.ParseSourceType(a.Config.Provider.Source.Type)
+	sourceType := a.Config.Provider.Source.Type
 	finalLSN := a.GlobalState.GetMinCheckpoint()
 	if finalLSN > 0 {
 		finalData := models.CheckpointFileData{

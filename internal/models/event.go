@@ -5,30 +5,23 @@ import (
 	"my-cdc/internal/pb"
 )
 
-// ParseSourceType chuyển đổi tên chuỗi thành mã định danh nguồn của protobuf.
-func ParseSourceType(source string) pb.SourceType {
-	switch source {
-	case "postgres":
-		return pb.SourceType_SOURCE_POSTGRES
-	case "mysql":
-		return pb.SourceType_SOURCE_MYSQL
-	case "sqlserver":
-		return pb.SourceType_SOURCE_SQLSERVER
-	default:
-		return pb.SourceType_SOURCE_UNKNOWN
-	}
-}
-
 // CheckpointFileData chứa thông tin mốc checkpoint để mã hóa JSON lưu xuống đĩa.
+//
+// SourceType là chuỗi tự do (VD: "postgres", "mysql"...), khớp trực tiếp với
+// DBConnection.Type trong config — không còn map qua enum pb.SourceType nữa.
+// Nhờ vậy khi thêm driver nguồn mới, không cần sửa file này hay event.proto.
 type CheckpointFileData struct {
 	InstanceName   string         `json:"instance_name"`   // Tên định danh của instance nguồn.
-	SourceType     pb.SourceType  `json:"source_type"`     // Loại định dạng file lưu theo DB nguồn
+	SourceType     string         `json:"source_type"`     // Tên loại nguồn (khớp DBConnection.Type).
 	CheckpointData *pb.Checkpoint `json:"checkpoint_data"` // Dữ liệu tọa độ chi tiết.
 	UpdatedAt      int64          `json:"updated_at"`      // Dấu thời gian cập nhật cuối cùng.
 }
 
 // BuildChangeEvent tạo ra đối tượng pb.ChangeEvent và marshal map dữ liệu thô sang mảng byte.
-func BuildChangeEvent(sourceType pb.SourceType, action pb.Action, schema, table string, keyNames []string, before, after map[string]any, offset *pb.Checkpoint) *pb.ChangeEvent {
+//
+// sourceType là chuỗi tự do (VD: "postgres"), do từng driver Capture tự truyền vào
+// (xem internal/capture/postgres/processor.go) — không còn đi qua bước parse enum.
+func BuildChangeEvent(sourceType string, action pb.Action, schema, table string, keyNames []string, before, after map[string]any, offset *pb.Checkpoint) *pb.ChangeEvent {
 	var beforeBytes, afterBytes []byte
 	if before != nil {
 		beforeBytes, _ = json.Marshal(before)

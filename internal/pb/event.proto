@@ -5,13 +5,6 @@ package pb;
 // Khai báo đường dẫn module để import trong Go
 option go_package = "my-cdc/pb";
 
-enum SourceType {
-  SOURCE_UNKNOWN = 0;
-  SOURCE_POSTGRES = 1;
-  SOURCE_MYSQL = 2;
-  SOURCE_SQLSERVER = 3;
-}
-
 enum Action {
   UNKNOWN = 0;
   INSERT = 1;
@@ -27,7 +20,10 @@ message Checkpoint {
 }
 
 message ChangeEvent {
-  SourceType source_type = 1;
+  // source_type là tên định danh của driver nguồn (VD: "postgres", "mysql"...),
+  // khớp với DBConnection.Type trong config. Dùng string thay vì enum để driver mới
+  // (folder mới trong internal/capture/<ten>) không cần sửa lại file .proto này.
+  string source_type = 1;
   Action action = 2;
   string schema = 3;
   string table = 4;

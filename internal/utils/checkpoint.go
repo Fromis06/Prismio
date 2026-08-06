@@ -19,7 +19,7 @@ import (
 // It uses json.RawMessage to avoid the "oneof" error of the standard encoding/json library.
 type checkpointFileDTO struct {
 	InstanceName   string          `json:"instance_name"`
-	SourceType     pb.SourceType   `json:"source_type"`
+	SourceType     string          `json:"source_type"`
 	CheckpointData json.RawMessage `json:"checkpoint_data"`
 	UpdatedAt      int64           `json:"updated_at"`
 }
@@ -34,7 +34,8 @@ func SaveProviderCheckpoint(dest config.CheckpointSaveDestination, data models.C
 	}
 
 	// 2. Create a filename based on the source type and instance name to avoid duplicates.
-	fileName := fmt.Sprintf("%d_%s_ckpt.json", data.SourceType, data.InstanceName)
+	// SourceType giờ là chuỗi tự do (VD: "postgres"), khớp trực tiếp với DBConnection.Type.
+	fileName := fmt.Sprintf("%s_%s_ckpt.json", data.SourceType, data.InstanceName)
 	fullPath := filepath.Join(folderPath, fileName)
 	tempPath := fullPath + ".tmp"
 
@@ -74,9 +75,12 @@ func SaveProviderCheckpoint(dest config.CheckpointSaveDestination, data models.C
 }
 
 // LoadProviderCheckpoint reads a checkpoint file from disk and decodes it into a struct.
-func LoadProviderCheckpoint(dest config.CheckpointSaveDestination, sourceType pb.SourceType, instanceName string) (*models.CheckpointFileData, error) {
+//
+// sourceType là chuỗi tự do (VD: "postgres"), khớp DBConnection.Type — không còn
+// dùng pb.SourceType enum nữa, nên driver nguồn mới không cần sửa file này.
+func LoadProviderCheckpoint(dest config.CheckpointSaveDestination, sourceType string, instanceName string) (*models.CheckpointFileData, error) {
 	folderPath := dest.Path
-	fileName := fmt.Sprintf("%d_%s_ckpt.json", sourceType, instanceName)
+	fileName := fmt.Sprintf("%s_%s_ckpt.json", sourceType, instanceName)
 	fullPath := filepath.Join(folderPath, fileName)
 
 	// 1. Read the file content.

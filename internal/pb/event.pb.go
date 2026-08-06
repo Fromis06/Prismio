@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.34.1
-// source: pb/event.proto
+// source: internal/pb/event.proto
 
 package pb
 
@@ -20,58 +20,6 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
-
-type SourceType int32
-
-const (
-	SourceType_SOURCE_UNKNOWN   SourceType = 0
-	SourceType_SOURCE_POSTGRES  SourceType = 1
-	SourceType_SOURCE_MYSQL     SourceType = 2
-	SourceType_SOURCE_SQLSERVER SourceType = 3
-)
-
-// Enum value maps for SourceType.
-var (
-	SourceType_name = map[int32]string{
-		0: "SOURCE_UNKNOWN",
-		1: "SOURCE_POSTGRES",
-		2: "SOURCE_MYSQL",
-		3: "SOURCE_SQLSERVER",
-	}
-	SourceType_value = map[string]int32{
-		"SOURCE_UNKNOWN":   0,
-		"SOURCE_POSTGRES":  1,
-		"SOURCE_MYSQL":     2,
-		"SOURCE_SQLSERVER": 3,
-	}
-)
-
-func (x SourceType) Enum() *SourceType {
-	p := new(SourceType)
-	*p = x
-	return p
-}
-
-func (x SourceType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (SourceType) Descriptor() protoreflect.EnumDescriptor {
-	return file_pb_event_proto_enumTypes[0].Descriptor()
-}
-
-func (SourceType) Type() protoreflect.EnumType {
-	return &file_pb_event_proto_enumTypes[0]
-}
-
-func (x SourceType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use SourceType.Descriptor instead.
-func (SourceType) EnumDescriptor() ([]byte, []int) {
-	return file_pb_event_proto_rawDescGZIP(), []int{0}
-}
 
 type Action int32
 
@@ -112,11 +60,11 @@ func (x Action) String() string {
 }
 
 func (Action) Descriptor() protoreflect.EnumDescriptor {
-	return file_pb_event_proto_enumTypes[1].Descriptor()
+	return file_internal_pb_event_proto_enumTypes[0].Descriptor()
 }
 
 func (Action) Type() protoreflect.EnumType {
-	return &file_pb_event_proto_enumTypes[1]
+	return &file_internal_pb_event_proto_enumTypes[0]
 }
 
 func (x Action) Number() protoreflect.EnumNumber {
@@ -125,7 +73,7 @@ func (x Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Action.Descriptor instead.
 func (Action) EnumDescriptor() ([]byte, []int) {
-	return file_pb_event_proto_rawDescGZIP(), []int{1}
+	return file_internal_pb_event_proto_rawDescGZIP(), []int{0}
 }
 
 type Checkpoint struct {
@@ -140,7 +88,7 @@ type Checkpoint struct {
 
 func (x *Checkpoint) Reset() {
 	*x = Checkpoint{}
-	mi := &file_pb_event_proto_msgTypes[0]
+	mi := &file_internal_pb_event_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -152,7 +100,7 @@ func (x *Checkpoint) String() string {
 func (*Checkpoint) ProtoMessage() {}
 
 func (x *Checkpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_pb_event_proto_msgTypes[0]
+	mi := &file_internal_pb_event_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -165,7 +113,7 @@ func (x *Checkpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
 func (*Checkpoint) Descriptor() ([]byte, []int) {
-	return file_pb_event_proto_rawDescGZIP(), []int{0}
+	return file_internal_pb_event_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Checkpoint) GetOffset() isCheckpoint_Offset {
@@ -195,22 +143,25 @@ type Checkpoint_Lsn struct {
 func (*Checkpoint_Lsn) isCheckpoint_Offset() {}
 
 type ChangeEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SourceType    SourceType             `protobuf:"varint,1,opt,name=source_type,json=sourceType,proto3,enum=pb.SourceType" json:"source_type,omitempty"`
-	Action        Action                 `protobuf:"varint,2,opt,name=action,proto3,enum=pb.Action" json:"action,omitempty"`
-	Schema        string                 `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
-	Table         string                 `protobuf:"bytes,4,opt,name=table,proto3" json:"table,omitempty"`
-	KeyNames      []string               `protobuf:"bytes,5,rep,name=key_names,json=keyNames,proto3" json:"key_names,omitempty"`
-	Before        []byte                 `protobuf:"bytes,6,opt,name=before,proto3" json:"before,omitempty"`
-	After         []byte                 `protobuf:"bytes,7,opt,name=after,proto3" json:"after,omitempty"`
-	Offset        *Checkpoint            `protobuf:"bytes,8,opt,name=offset,proto3" json:"offset,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// source_type là tên định danh của driver nguồn (VD: "postgres", "mysql"...),
+	// khớp với DBConnection.Type trong config. Dùng string thay vì enum để driver mới
+	// (folder mới trong internal/capture/<ten>) không cần sửa lại file .proto này.
+	SourceType    string      `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	Action        Action      `protobuf:"varint,2,opt,name=action,proto3,enum=pb.Action" json:"action,omitempty"`
+	Schema        string      `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table         string      `protobuf:"bytes,4,opt,name=table,proto3" json:"table,omitempty"`
+	KeyNames      []string    `protobuf:"bytes,5,rep,name=key_names,json=keyNames,proto3" json:"key_names,omitempty"`
+	Before        []byte      `protobuf:"bytes,6,opt,name=before,proto3" json:"before,omitempty"`
+	After         []byte      `protobuf:"bytes,7,opt,name=after,proto3" json:"after,omitempty"`
+	Offset        *Checkpoint `protobuf:"bytes,8,opt,name=offset,proto3" json:"offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChangeEvent) Reset() {
 	*x = ChangeEvent{}
-	mi := &file_pb_event_proto_msgTypes[1]
+	mi := &file_internal_pb_event_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -222,7 +173,7 @@ func (x *ChangeEvent) String() string {
 func (*ChangeEvent) ProtoMessage() {}
 
 func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pb_event_proto_msgTypes[1]
+	mi := &file_internal_pb_event_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -235,14 +186,14 @@ func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangeEvent.ProtoReflect.Descriptor instead.
 func (*ChangeEvent) Descriptor() ([]byte, []int) {
-	return file_pb_event_proto_rawDescGZIP(), []int{1}
+	return file_internal_pb_event_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ChangeEvent) GetSourceType() SourceType {
+func (x *ChangeEvent) GetSourceType() string {
 	if x != nil {
 		return x.SourceType
 	}
-	return SourceType_SOURCE_UNKNOWN
+	return ""
 }
 
 func (x *ChangeEvent) GetAction() Action {
@@ -294,17 +245,17 @@ func (x *ChangeEvent) GetOffset() *Checkpoint {
 	return nil
 }
 
-var File_pb_event_proto protoreflect.FileDescriptor
+var File_internal_pb_event_proto protoreflect.FileDescriptor
 
-const file_pb_event_proto_rawDesc = "" +
+const file_internal_pb_event_proto_rawDesc = "" +
 	"\n" +
-	"\x0epb/event.proto\x12\x02pb\"*\n" +
+	"\x17internal/pb/event.proto\x12\x02pb\"*\n" +
 	"\n" +
 	"Checkpoint\x12\x12\n" +
 	"\x03lsn\x18\x01 \x01(\x04H\x00R\x03lsnB\b\n" +
-	"\x06offset\"\x83\x02\n" +
-	"\vChangeEvent\x12/\n" +
-	"\vsource_type\x18\x01 \x01(\x0e2\x0e.pb.SourceTypeR\n" +
+	"\x06offset\"\xf3\x01\n" +
+	"\vChangeEvent\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
 	"sourceType\x12\"\n" +
 	"\x06action\x18\x02 \x01(\x0e2\n" +
 	".pb.ActionR\x06action\x12\x16\n" +
@@ -313,13 +264,7 @@ const file_pb_event_proto_rawDesc = "" +
 	"\tkey_names\x18\x05 \x03(\tR\bkeyNames\x12\x16\n" +
 	"\x06before\x18\x06 \x01(\fR\x06before\x12\x14\n" +
 	"\x05after\x18\a \x01(\fR\x05after\x12&\n" +
-	"\x06offset\x18\b \x01(\v2\x0e.pb.CheckpointR\x06offset*]\n" +
-	"\n" +
-	"SourceType\x12\x12\n" +
-	"\x0eSOURCE_UNKNOWN\x10\x00\x12\x13\n" +
-	"\x0fSOURCE_POSTGRES\x10\x01\x12\x10\n" +
-	"\fSOURCE_MYSQL\x10\x02\x12\x14\n" +
-	"\x10SOURCE_SQLSERVER\x10\x03*E\n" +
+	"\x06offset\x18\b \x01(\v2\x0e.pb.CheckpointR\x06offset*E\n" +
 	"\x06Action\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\n" +
 	"\n" +
@@ -332,60 +277,58 @@ const file_pb_event_proto_rawDesc = "" +
 	"\x06COMMIT\x10\x04B\vZ\tmy-cdc/pbb\x06proto3"
 
 var (
-	file_pb_event_proto_rawDescOnce sync.Once
-	file_pb_event_proto_rawDescData []byte
+	file_internal_pb_event_proto_rawDescOnce sync.Once
+	file_internal_pb_event_proto_rawDescData []byte
 )
 
-func file_pb_event_proto_rawDescGZIP() []byte {
-	file_pb_event_proto_rawDescOnce.Do(func() {
-		file_pb_event_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_pb_event_proto_rawDesc), len(file_pb_event_proto_rawDesc)))
+func file_internal_pb_event_proto_rawDescGZIP() []byte {
+	file_internal_pb_event_proto_rawDescOnce.Do(func() {
+		file_internal_pb_event_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_pb_event_proto_rawDesc), len(file_internal_pb_event_proto_rawDesc)))
 	})
-	return file_pb_event_proto_rawDescData
+	return file_internal_pb_event_proto_rawDescData
 }
 
-var file_pb_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_pb_event_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_pb_event_proto_goTypes = []any{
-	(SourceType)(0),     // 0: pb.SourceType
-	(Action)(0),         // 1: pb.Action
-	(*Checkpoint)(nil),  // 2: pb.Checkpoint
-	(*ChangeEvent)(nil), // 3: pb.ChangeEvent
+var file_internal_pb_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_internal_pb_event_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_internal_pb_event_proto_goTypes = []any{
+	(Action)(0),         // 0: pb.Action
+	(*Checkpoint)(nil),  // 1: pb.Checkpoint
+	(*ChangeEvent)(nil), // 2: pb.ChangeEvent
 }
-var file_pb_event_proto_depIdxs = []int32{
-	0, // 0: pb.ChangeEvent.source_type:type_name -> pb.SourceType
-	1, // 1: pb.ChangeEvent.action:type_name -> pb.Action
-	2, // 2: pb.ChangeEvent.offset:type_name -> pb.Checkpoint
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+var file_internal_pb_event_proto_depIdxs = []int32{
+	0, // 0: pb.ChangeEvent.action:type_name -> pb.Action
+	1, // 1: pb.ChangeEvent.offset:type_name -> pb.Checkpoint
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_pb_event_proto_init() }
-func file_pb_event_proto_init() {
-	if File_pb_event_proto != nil {
+func init() { file_internal_pb_event_proto_init() }
+func file_internal_pb_event_proto_init() {
+	if File_internal_pb_event_proto != nil {
 		return
 	}
-	file_pb_event_proto_msgTypes[0].OneofWrappers = []any{
+	file_internal_pb_event_proto_msgTypes[0].OneofWrappers = []any{
 		(*Checkpoint_Lsn)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pb_event_proto_rawDesc), len(file_pb_event_proto_rawDesc)),
-			NumEnums:      2,
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_pb_event_proto_rawDesc), len(file_internal_pb_event_proto_rawDesc)),
+			NumEnums:      1,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_pb_event_proto_goTypes,
-		DependencyIndexes: file_pb_event_proto_depIdxs,
-		EnumInfos:         file_pb_event_proto_enumTypes,
-		MessageInfos:      file_pb_event_proto_msgTypes,
+		GoTypes:           file_internal_pb_event_proto_goTypes,
+		DependencyIndexes: file_internal_pb_event_proto_depIdxs,
+		EnumInfos:         file_internal_pb_event_proto_enumTypes,
+		MessageInfos:      file_internal_pb_event_proto_msgTypes,
 	}.Build()
-	File_pb_event_proto = out.File
-	file_pb_event_proto_goTypes = nil
-	file_pb_event_proto_depIdxs = nil
+	File_internal_pb_event_proto = out.File
+	file_internal_pb_event_proto_goTypes = nil
+	file_internal_pb_event_proto_depIdxs = nil
 }
