@@ -31,14 +31,18 @@ const (
 )
 
 func Run() {
-	logger.Initialize()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tuiApp := tview.NewApplication()
 	pages := tview.NewPages()
 
-	// Ghi log ra cả stdout lẫn panel log của dashboard
+	// Dashboard phải được tạo TRƯỚC khi khởi tạo logger, vì logger cần ghi vào
+	// dashboard.LogWriter(). Trước đây logger.Initialize() được gọi không tham số
+	// ngay dòng đầu hàm Run(), nên toàn bộ log (SINK, CHECKPOINT, Flushing batch...)
+	// chỉ đi ra os.Stdout thô — trong khi tview đang chiếm quyền vẽ màn hình, khiến
+	// log ghi đè lên UI và làm dashboard trông như "không hiện gì" khi bật CDC.
 	dashboard := NewDashboard(tuiApp)
+	logger.Initialize(dashboard.LogWriter())
 
 	// --- Nạp bảng tài khoản (dùng chung) ---
 	// Đây là dữ liệu DUY NHẤT cần đọc trước khi đăng nhập, vì phải xác thực xong mới
@@ -127,6 +131,8 @@ func Run() {
 			}
 
 			go func() {
+				// app.Bootstrap() giờ tự tạo thư mục lưu checkpoint (cfg.SaveDestination.Path)
+				// ngay từ đầu, kể cả khi chưa có transaction nào để lưu — xem internal/app/app.go.
 				newApp, bootstrapErr := app.Bootstrap(ctx, cfg)
 				if bootstrapErr != nil {
 					tuiApp.QueueUpdateDraw(func() {

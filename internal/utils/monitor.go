@@ -2,7 +2,7 @@ package utils
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	_ "net/http/pprof" // [Thêm] Import gói pprof để tự động đăng ký các route /debug/pprof
 	"runtime"
@@ -31,14 +31,19 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 		configHandler := api.NewConfigHandler(cfg)
 		http.Handle("/config", configHandler)
 
-		log.Printf("MONITOR: Bật PPROF tại http://%s:%d/debug/pprof/", listenAddr, port)
-		log.Printf("API: Bật endpoint quản lý cấu hình tại http://%s:%d/config (GET, POST)", listenAddr, port)
+		slog.Info("MONITOR: Bật PPROF", "url", fmt.Sprintf("http://%s:%d/debug/pprof/", listenAddr, port))
+		slog.Info("API: Bật endpoint quản lý cấu hình", "url", fmt.Sprintf("http://%s:%d/config", listenAddr, port), "methods", "GET, POST")
 
-		log.Println(http.ListenAndServe(fmt.Sprintf("%s:%d", listenAddr, port), nil))
+		// Dùng slog thay vì log.Println để lỗi (nếu có) của ListenAndServe cũng
+		// đi qua cùng handler (stdout + panel log dashboard) như mọi log khác,
+		// thay vì ghi thẳng ra os.Stderr và có thể đè lên màn hình TUI.
+		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", listenAddr, port), nil); err != nil {
+			slog.Error("MONITOR: PPROF/API HTTP server dừng với lỗi", "error", err)
+		}
 	}()
 
 	var lastInsert, lastUpdate, lastDelete int64
-	log.Printf("MONITOR: Đã khởi động (Chu kỳ: %v)", interval)
+	slog.Info("MONITOR: Đã khởi động", "interval", interval)
 
 	for range ticker.C {
 		currentInsert := counts.InsertCount.Load()
@@ -67,7 +72,14 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 		liveBatchSize := cfg.Batch.BatchMaxSize.Load()
 		liveBatchTimeout := cfg.Batch.BatchTimeout.Load()
 
-		log.Printf("MONITOR: EPS=%.0f | RAM(Go)=%dMB, RAM(Sys)=%dMB | Workers=%d, BatchSize=%d, Timeout=%dms | Tổng Events=%d",
-			eps, allocMB, Sys, liveWorkers, liveBatchSize, liveBatchTimeout, currentInsert+currentUpdate+currentDelete)
+		slog.Info("MONITOR",
+			"eps", eps,
+			"ram_go_mb", allocMB,
+			"ram_sys_mb", Sys,
+			"workers", liveWorkers,
+			"batch_size", liveBatchSize,
+			"batch_timeout_ms", liveBatchTimeout,
+			"total_events", currentInsert+currentUpdate+currentDelete,
+		)
 	}
 }

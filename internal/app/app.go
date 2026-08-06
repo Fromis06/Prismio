@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"log/slog"
@@ -34,6 +35,18 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 
 	eventsCount := &models.EventsCount{}
 	globalState := models.NewGlobalState()
+
+	// 0. Đảm bảo thư mục lưu checkpoint tồn tại NGAY LÚC KHỞI ĐỘNG, độc lập với việc
+	// có dữ liệu để lưu hay chưa (SaveProviderCheckpoint chỉ được gọi khi đã có
+	// checkpoint LSN > 0, tức là sau khi có ít nhất 1 transaction đi qua trót lọt).
+	// Nếu để tới lúc đó mới tạo thư mục, người dùng sẽ không biết được liệu tiến trình
+	// có quyền ghi đĩa hay không cho tới khi có dữ liệu thật — vừa trễ, vừa dễ gây
+	// nhầm lẫn với lỗi kết nối. Tạo và log ngay ở đây giúp fail-fast (VD: sai quyền
+	// thư mục) và cho người dùng biết checkpoint sẽ được lưu ở đâu.
+	if err := os.MkdirAll(cfg.SaveDestination.Path, 0755); err != nil {
+		return nil, fmt.Errorf("không thể tạo thư mục lưu checkpoint [%s]: %w", cfg.SaveDestination.Path, err)
+	}
+	slog.Info("CHECKPOINT: Thư mục lưu trữ đã sẵn sàng", "path", cfg.SaveDestination.Path)
 
 	// sourceType là chuỗi tự do lấy thẳng từ config (VD: "postgres"), khớp với
 	// tên driver đã Register() trong internal/drivers — không còn qua bước parse enum.
@@ -116,5 +129,7 @@ func (a *Application) Shutdown() {
 		} else {
 			slog.Info("CHECKPOINT: Đã lưu thành công LSN cuối cùng.", "lsn", finalLSN)
 		}
+	} else {
+		slog.Info("CHECKPOINT: Chưa có dữ liệu để lưu (chưa xử lý transaction nào), bỏ qua lúc shutdown.")
 	}
 }
