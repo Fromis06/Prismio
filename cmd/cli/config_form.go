@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"my-cdc/internal/config"
+	"my-cdc/internal/sinks"
 
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -33,6 +34,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	var buildRows func()
 	var rebuildTable func()
 	var startEdit func(rowIdx int)
+	var showAddSinkTypeDropdown func()
 
 	// Hàm persist tự tạo để ghi đè config hiện tại xuống file yaml
 	persist := func() {
@@ -71,17 +73,11 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				if locked {
 					return
 				}
-				n := len(cfg.Consumers.List) + 1
-				cfg.Consumers.List = append(cfg.Consumers.List, config.DBConnection{
-					Name:     fmt.Sprintf("postgres_dest_%d", n),
-					Type:     "postgres",
-					URL:      "",
-					IsActive: true,
-				})
-				newDestRowIdx := len(cfg.Consumers.List)
-				rebuildTable()
-				table.Select(newDestRowIdx, 0)
-				startEdit(newDestRowIdx)
+				// Không còn hardcode Type: "postgres" ở đây nữa — người dùng chọn
+				// loại DB từ danh sách driver đã thực sự đăng ký (sinks.ListRegistered()).
+				// Thêm driver mới vào internal/drivers/drivers.go là dropdown này tự
+				// có thêm lựa chọn, không cần sửa file này.
+				showAddSinkTypeDropdown()
 			},
 		})
 
@@ -232,6 +228,78 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 		rootPages.AddPage("edit", overlay, true, true)
 		tuiApp.SetFocus(input)
+	}
+
+	// showAddSinkTypeDropdown hiển thị 1 dropdown liệt kê mọi Sink đã Register() —
+	// tức mọi driver đã thực sự được compile vào binary qua internal/drivers/drivers.go.
+	// Chọn xong sẽ tạo 1 DBConnection mới với URL được điền sẵn theo Metadata.URLTemplate
+	// của driver đó, rồi mở luôn ô sửa để người dùng thay thông số kết nối thật vào.
+	//
+	// Thêm 1 driver sink mới không cần sửa gì ở đây — dropdown tự động có thêm lựa chọn
+	// vì danh sách lấy trực tiếp từ sinks.ListRegistered().
+	showAddSinkTypeDropdown = func() {
+		driverList := sinks.ListRegistered()
+		if len(driverList) == 0 {
+			statusView.SetText("[red]Không có driver Sink nào được đăng ký (kiểm tra internal/drivers/drivers.go)[-]")
+			return
+		}
+
+		options := make([]string, len(driverList))
+		for i, d := range driverList {
+			options[i] = d.Metadata.DisplayName
+		}
+
+		closeDropdown := func() {
+			rootPages.RemovePage("addSinkType")
+			tuiApp.SetFocus(table)
+		}
+
+		dropdown := tview.NewDropDown().
+			SetLabel("Chọn loại database đích: ").
+			SetOptions(options, func(text string, index int) {
+				if index < 0 || index >= len(driverList) {
+					closeDropdown()
+					return
+				}
+				chosen := driverList[index]
+
+				n := len(cfg.Consumers.List) + 1
+				cfg.Consumers.List = append(cfg.Consumers.List, config.DBConnection{
+					Name:     fmt.Sprintf("%s_dest_%d", chosen.Type, n),
+					Type:     chosen.Type,
+					URL:      chosen.Metadata.URLTemplate,
+					IsActive: true,
+				})
+				newDestRowIdx := len(cfg.Consumers.List)
+
+				closeDropdown()
+				rebuildTable()
+				table.Select(newDestRowIdx, 0)
+				// Mở ngay ô sửa URL để người dùng thay thông số kết nối thật,
+				// thay cho template mặc định.
+				startEdit(newDestRowIdx)
+			})
+
+		dropdown.SetDoneFunc(func(key tcell.Key) {
+			if key == tcell.KeyEscape {
+				closeDropdown()
+			}
+		})
+
+		box := tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(dropdown, 1, 0, true)
+		box.SetBorder(true).SetTitle(" Chọn loại Sink — Enter: chọn, Esc: huỷ ")
+
+		overlay := tview.NewFlex().
+			AddItem(nil, 0, 1, false).
+			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+				AddItem(nil, 0, 1, false).
+				AddItem(box, 3, 0, true).
+				AddItem(nil, 0, 1, false), 0, 3, true).
+			AddItem(nil, 0, 1, false)
+
+		rootPages.AddPage("addSinkType", overlay, true, true)
+		tuiApp.SetFocus(dropdown)
 	}
 
 	table.SetSelectedFunc(func(row, col int) {

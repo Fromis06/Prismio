@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -24,6 +25,11 @@ import (
 	_ "my-cdc/internal/drivers"
 )
 
+const (
+	accountsPath = "accounts.yaml" // Bảng tài khoản DÙNG CHUNG — cần đọc trước khi biết ai đăng nhập.
+	configsDir   = "configs"       // Mỗi tài khoản có 1 file cấu hình vận hành riêng: configs/<username>.yaml
+)
+
 func Run() {
 	logger.Initialize()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -34,32 +40,21 @@ func Run() {
 	// Ghi log ra cả stdout lẫn panel log của dashboard
 	dashboard := NewDashboard(tuiApp)
 
-	const configPath = "config.yaml"
-
-	// --- PHA 1: Chỉ load cấu hình, không có side-effect ---
-	cfg := config.NewDefaultConfig()
-
-	// Nạp toàn bộ cấu hình (nguồn, danh sách đích, hiệu năng, API key...) từ config.yaml nếu có.
-	if overrides, err := config.LoadOverrides(configPath); err == nil {
-		absPath, _ := filepath.Abs(configPath)
-		slog.Info("Loaded configuration from file", "path", absPath)
-		overrides.ApplyTo(cfg)
-
-		// Ghi lại theo format đầy đủ mới — tự động migrate file cũ (chỉ có hashed_api_keys)
-		// sang schema mới ngay lần chạy đầu tiên.
-		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
-			slog.Warn("Failed to normalize config.yaml to new format", "error", saveErr)
-		}
-	} else {
-		// File chưa tồn tại (lần chạy đầu) hoặc không đọc được: tạo file mới từ giá trị mặc định.
-		absPath, _ := filepath.Abs(configPath)
-		slog.Info("config.yaml not found or unreadable, creating with defaults.", "path", absPath, "error", err)
-		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
-			slog.Error("Failed to save initial config.yaml", "error", saveErr)
+	// --- Nạp bảng tài khoản (dùng chung) ---
+	// Đây là dữ liệu DUY NHẤT cần đọc trước khi đăng nhập, vì phải xác thực xong mới
+	// biết nạp file cấu hình vận hành của tài khoản nào (configs/<username>.yaml).
+	accounts, err := config.LoadAccounts(accountsPath)
+	if err != nil {
+		absPath, _ := filepath.Abs(accountsPath)
+		slog.Info("accounts.yaml chưa tồn tại, tạo bảng tài khoản mới (rỗng).", "path", absPath, "error", err)
+		accounts = &config.AccountsFile{HashedAPIKeys: make(map[string]string)}
+		if saveErr := config.SaveAccounts(accountsPath, accounts); saveErr != nil {
+			slog.Error("Failed to save initial accounts.yaml", "error", saveErr)
 		}
 	}
 
 	var cdcAppRef atomic.Pointer[app.Application]
+	var configFormLock func()
 
 	errorModal := tview.NewModal().
 		SetText("Invalid API Key. Please try again.").
@@ -81,6 +76,96 @@ func Run() {
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) { pages.HidePage("usernameExists") })
 	usernameExistsModal.SetTitle("Username Conflict")
 
+	// loadUserConfig nạp (hoặc khởi tạo mới nếu chưa có) cấu hình vận hành RIÊNG của
+	// 1 tài khoản. Mỗi tài khoản có Source/Consumers/Batch/Worker... độc lập, không
+	// còn dùng chung 1 config.yaml như trước.
+	loadUserConfig := func(username string) (*config.AppConfig, string) {
+		userConfigPath := filepath.Join(configsDir, username+".yaml")
+		cfg := config.NewDefaultConfig()
+
+		// Cô lập thư mục checkpoint theo từng tài khoản để tránh đụng LSN của nhau
+		// khi đổi tài khoản (đặt trước khi ApplyTo, để user vẫn override được nếu muốn).
+		cfg.SaveDestination.Path = filepath.Join("local_checkpoints", username)
+
+		// HashedAPIKeys dùng cho xác thực API HTTP (/config) vẫn lấy từ bảng tài khoản
+		// dùng chung — không phải thứ "riêng của từng user", nên không nằm trong
+		// configs/<username>.yaml.
+		cfg.Monitor.HashedAPIKeys = accounts.HashedAPIKeys
+
+		if overrides, loadErr := config.LoadOverrides(userConfigPath); loadErr == nil {
+			absPath, _ := filepath.Abs(userConfigPath)
+			slog.Info("Loaded per-account configuration", "username", username, "path", absPath)
+			overrides.ApplyTo(cfg)
+			// ApplyTo không đụng tới Monitor.HashedAPIKeys (đã bỏ khỏi OverrideConfig),
+			// nên giá trị gán ở trên vẫn giữ nguyên sau bước này.
+		} else {
+			absPath, _ := filepath.Abs(userConfigPath)
+			slog.Info("Chưa có cấu hình riêng cho tài khoản này, tạo mới với giá trị mặc định.", "username", username, "path", absPath, "error", loadErr)
+			if mkErr := os.MkdirAll(configsDir, 0755); mkErr != nil {
+				slog.Error("Failed to create configs directory", "error", mkErr)
+			}
+			if saveErr := config.SaveFullConfig(userConfigPath, cfg); saveErr != nil {
+				slog.Error("Failed to save initial per-account config", "username", username, "error", saveErr)
+			}
+		}
+
+		return cfg, userConfigPath
+	}
+
+	// enterWorkspace được gọi ngay sau khi đăng nhập thành công: nạp cấu hình riêng
+	// của tài khoản đó, dựng lại trang Config gắn với đúng cfg này, rồi chuyển màn hình.
+	enterWorkspace := func(username string) {
+		cfg, userConfigPath := loadUserConfig(username)
+
+		runCdcCallback := func() {
+			modal := tview.NewModal().SetText("Initializing CDC... Please wait.")
+			pages.AddPage("running", modal, true, true)
+			pages.ShowPage("running")
+
+			if configFormLock != nil {
+				configFormLock()
+			}
+
+			go func() {
+				newApp, bootstrapErr := app.Bootstrap(ctx, cfg)
+				if bootstrapErr != nil {
+					tuiApp.QueueUpdateDraw(func() {
+						pages.HidePage("running")
+						bootstrapErrorModal.SetText(fmt.Sprintf("Khởi tạo CDC thất bại:\n%v", bootstrapErr))
+						pages.ShowPage("bootstrap_error")
+					})
+					return
+				}
+				cdcAppRef.Store(newApp)
+
+				newApp.MultiSink.Start()
+				go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
+				newApp.AutoTuner.Start()
+
+				go func() {
+					if err := newApp.Listener.Start(ctx, newApp.Config.Provider.Source.URL, newApp.GlobalState); err != nil && err != context.Canceled {
+						slog.Error("Capture stream unexpectedly interrupted", "error", err)
+					}
+				}()
+
+				tuiApp.QueueUpdateDraw(func() {
+					pages.HidePage("running")
+					dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
+					pages.SwitchToPage("dashboard")
+				})
+			}()
+		}
+
+		configForm, lockConfigForm := NewConfigForm(tuiApp, cfg, userConfigPath, runCdcCallback)
+		configFormLock = lockConfigForm
+
+		// Gỡ trang "config" của lần đăng nhập trước (nếu có) trước khi gắn trang mới,
+		// tránh 2 trang trùng tên cùng tồn tại trong Pages.
+		pages.RemovePage("config")
+		pages.AddPage("config", configForm, true, false)
+		pages.SwitchToPage("config")
+	}
+
 	loginAttemptCallback := func(username, apiKey string) {
 		if apiKey == "" || username == "" {
 			pages.ShowPage("error")
@@ -89,11 +174,11 @@ func Run() {
 
 		// Băm API Key và kiểm tra xem nó có tồn tại và khớp với username không
 		hashedInput := api.HashAPIKey(apiKey)
-		storedUsername, exists := cfg.Monitor.HashedAPIKeys[hashedInput]
+		storedUsername, exists := accounts.HashedAPIKeys[hashedInput]
 
 		if exists && storedUsername == username {
 			slog.Info("TUI: API Key validated successfully.", "username", username)
-			pages.SwitchToPage("config")
+			enterWorkspace(username)
 		} else {
 			slog.Warn("TUI: Failed login attempt.", "username", username)
 			pages.ShowPage("error")
@@ -106,14 +191,17 @@ func Run() {
 		SetFieldBackgroundColor(tview.Styles.PrimitiveBackgroundColor).
 		SetFieldTextColor(tview.Styles.PrimaryTextColor)
 
-	// Callback khi người dùng bấm nút "Create" trên form tạo user
+	// Callback khi người dùng bấm nút "Create" trên form tạo user.
+	// Chỉ cập nhật bảng tài khoản dùng chung (accounts.yaml) — cấu hình vận hành
+	// riêng của tài khoản mới sẽ tự được tạo (giá trị mặc định) ở lần đăng nhập đầu
+	// tiên, xem loadUserConfig().
 	createUserAndKey := func() {
 		username := createUserForm.GetFormItem(0).(*tview.InputField).GetText()
 		if username == "" {
 			return
 		}
 
-		for _, existingUsername := range cfg.Monitor.HashedAPIKeys {
+		for _, existingUsername := range accounts.HashedAPIKeys {
 			if existingUsername == username {
 				pages.ShowPage("usernameExists")
 				return
@@ -126,21 +214,15 @@ func Run() {
 			return
 		}
 
-		// Chụp snapshot từ cfg đang sống — để không bỏ sót các đích vừa thêm qua UI mà chưa kịp lưu
-		newOverrides := config.FromAppConfig(cfg)
-		if newOverrides.Monitor.HashedAPIKeys == nil {
-			newOverrides.Monitor.HashedAPIKeys = make(map[string]string)
-		}
-		newOverrides.Monitor.HashedAPIKeys[hashedKey] = username
+		accounts.HashedAPIKeys[hashedKey] = username
 
-		absPath, _ := filepath.Abs(configPath)
-		if err := config.SaveOverrides(configPath, newOverrides); err != nil {
-			slog.Error("Failed to save new API key to config file", "path", absPath, "error", err)
+		absPath, _ := filepath.Abs(accountsPath)
+		if err := config.SaveAccounts(accountsPath, accounts); err != nil {
+			slog.Error("Failed to save new account to accounts.yaml", "path", absPath, "error", err)
 			return
 		}
 
-		cfg.Monitor.HashedAPIKeys = newOverrides.Monitor.HashedAPIKeys
-		slog.Info("Successfully generated and saved new API key", "path", absPath, "username", username)
+		slog.Info("Successfully generated and saved new account", "path", absPath, "username", username)
 
 		// Hiển thị key cho người dùng
 		keyDisplayForm := tview.NewForm().
@@ -171,56 +253,10 @@ func Run() {
 		pages.SwitchToPage("createUser")
 	}
 
-	var configFormLock func()
-
-	runCdcCallback := func() {
-		modal := tview.NewModal().SetText("Initializing CDC... Please wait.")
-		pages.AddPage("running", modal, true, true)
-		pages.ShowPage("running")
-
-		if configFormLock != nil {
-			configFormLock()
-		}
-
-		// --- PHA 2: Chạy Bootstrap trong goroutine ---
-		go func() {
-			newApp, err := app.Bootstrap(ctx, cfg)
-			if err != nil {
-				tuiApp.QueueUpdateDraw(func() {
-					pages.HidePage("running")
-					dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
-					pages.SwitchToPage("dashboard")
-				})
-				return
-			}
-			cdcAppRef.Store(newApp)
-
-			newApp.MultiSink.Start()
-			go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
-			newApp.AutoTuner.Start()
-
-			go func() {
-				if err := newApp.Listener.Start(ctx, newApp.Config.Provider.Source.URL, newApp.GlobalState); err != nil && err != context.Canceled {
-					slog.Error("Capture stream unexpectedly interrupted", "error", err)
-				}
-			}()
-
-			tuiApp.QueueUpdateDraw(func() {
-				pages.HidePage("running")
-				dashboard.StartLiveUpdates(ctx, tuiApp, newApp, time.Second)
-				pages.SwitchToPage("dashboard")
-			})
-		}()
-	}
-
 	loginForm := NewLoginForm(tuiApp, loginAttemptCallback, createKeyCallback)
-	// Truyền thêm configPath vào NewConfigForm
-	configForm, lockConfigForm := NewConfigForm(tuiApp, cfg, configPath, runCdcCallback)
-	configFormLock = lockConfigForm
 
 	pages.AddPage("login", loginForm, true, true)
 	pages.AddPage("createUser", centeredCreateUserForm, true, false)
-	pages.AddPage("config", configForm, true, false)
 	pages.AddPage("dashboard", dashboard.Layout, true, false)
 	pages.AddPage("error", errorModal, false, false)
 	pages.AddPage("usernameExists", usernameExistsModal, false, false)

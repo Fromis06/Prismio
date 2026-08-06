@@ -119,14 +119,14 @@ func NewDefaultConfig() *AppConfig {
 	cfg := &AppConfig{}
 
 	// Cấu hình kết nối mặc định
-	cfg.Provider.Source.URL = "postgres://postgres:password@192.168.137.89:5420/postgres?sslmode=disable&replication=database&slot_name=cdc_test_slot&publication_names=cdc_pub"
-	cfg.Provider.Source.Name = "postgres_source_native"
-	cfg.Provider.Source.Type = "postgres"
+	cfg.Provider.Source.URL = ""
+	cfg.Provider.Source.Name = ""
+	cfg.Provider.Source.Type = ""
 	cfg.Consumers.List = []DBConnection{
 		{
-			Name:     "postgres_dest_native",
-			Type:     "postgres",
-			URL:      "postgres://postgres:password@192.168.137.194:5419/postgres?sslmode=disable",
+			Name:     "",
+			Type:     "",
+			URL:      "",
 			IsActive: true,
 		},
 	}

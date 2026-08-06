@@ -63,4 +63,11 @@ Thumbs.db
 .txt
 .md
 /vendor/
+
+# ==========================================
+# 6. Config & Accounts (chứa thông tin kết nối / hashed API key riêng từng máy)
+# ==========================================
 config.yaml
+accounts.yaml
+/configs/
+/local_checkpoints/

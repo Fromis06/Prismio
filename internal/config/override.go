@@ -44,16 +44,19 @@ type StateOverride struct {
 	SavePath    string `yaml:"save_path,omitempty"`
 }
 
+// MonitorOverride KHÔNG còn chứa HashedAPIKeys — bảng tài khoản giờ nằm ở
+// accounts.yaml (dùng chung, xem accounts.go), tách khỏi cấu hình vận hành
+// riêng từng user để tránh 2 khái niệm khác nhau bị trộn vào 1 file.
 type MonitorOverride struct {
-	HttpPort           int               `yaml:"http_port,omitempty"`
-	ListenAddress      string            `yaml:"listen_address,omitempty"`
-	MonitorIntervalSec int               `yaml:"monitor_interval_sec,omitempty"`
-	HashedAPIKeys      map[string]string `yaml:"hashed_api_keys,omitempty"`
+	HttpPort           int    `yaml:"http_port,omitempty"`
+	ListenAddress      string `yaml:"listen_address,omitempty"`
+	MonitorIntervalSec int    `yaml:"monitor_interval_sec,omitempty"`
 }
 
-// OverrideConfig là toàn bộ nội dung có thể lưu/đọc từ config.yaml.
-// Khác với AppConfig (chứa atomic.Int64/Int32 để live-tuning trong lúc chạy),
-// OverrideConfig chỉ dùng kiểu dữ liệu thường để (de)serialize YAML thuận tiện.
+// OverrideConfig là toàn bộ nội dung có thể lưu/đọc từ file cấu hình RIÊNG của
+// 1 tài khoản (VD: configs/<username>.yaml). Khác với AppConfig (chứa
+// atomic.Int64/Int32 để live-tuning trong lúc chạy), OverrideConfig chỉ dùng
+// kiểu dữ liệu thường để (de)serialize YAML thuận tiện.
 type OverrideConfig struct {
 	Provider    ProviderOverride       `yaml:"provider"`
 	Consumers   []DBConnectionOverride `yaml:"consumers"`
@@ -93,8 +96,9 @@ func SaveOverrides(path string, overrides *OverrideConfig) error {
 }
 
 // SaveFullConfig chụp toàn bộ trạng thái hiện tại của AppConfig (bao gồm mọi consumer
-// đã thêm qua CLI lúc runtime) và lưu xuống config.yaml. Đây là hàm nên dùng thay vì
-// tự dựng OverrideConfig tay, để đảm bảo file trên đĩa luôn khớp với cfg đang chạy.
+// đã thêm qua CLI lúc runtime) và lưu xuống file cấu hình của tài khoản đang dùng.
+// Đây là hàm nên dùng thay vì tự dựng OverrideConfig tay, để đảm bảo file trên đĩa
+// luôn khớp với cfg đang chạy.
 func SaveFullConfig(path string, cfg *AppConfig) error {
 	return SaveOverrides(path, FromAppConfig(cfg))
 }
@@ -143,7 +147,6 @@ func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 		HttpPort:           cfg.Monitor.HttpPort,
 		ListenAddress:      cfg.Monitor.ListenAddress,
 		MonitorIntervalSec: cfg.Monitor.MonitorIntervalSec,
-		HashedAPIKeys:      cfg.Monitor.HashedAPIKeys,
 	}
 
 	return o
@@ -151,7 +154,7 @@ func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 
 // ApplyTo ghi đè các giá trị có trong OverrideConfig lên AppConfig. Field nào không
 // được khai báo trong YAML (chuỗi rỗng, con trỏ nil) thì AppConfig giữ nguyên giá trị
-// mặc định đã có sẵn từ NewDefaultConfig — cho phép config.yaml chỉ cần liệt kê phần
+// mặc định đã có sẵn từ NewDefaultConfig — cho phép file cấu hình chỉ cần liệt kê phần
 // người dùng muốn thay đổi.
 func (o *OverrideConfig) ApplyTo(cfg *AppConfig) {
 	if o == nil {
@@ -220,9 +223,6 @@ func (o *OverrideConfig) ApplyTo(cfg *AppConfig) {
 	}
 	if o.Monitor.MonitorIntervalSec != 0 {
 		cfg.Monitor.MonitorIntervalSec = o.Monitor.MonitorIntervalSec
-	}
-	if len(o.Monitor.HashedAPIKeys) > 0 {
-		cfg.Monitor.HashedAPIKeys = o.Monitor.HashedAPIKeys
 	}
 }
 
