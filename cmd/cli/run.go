@@ -57,6 +57,17 @@ func Run() {
 	}
 
 	var cdcAppRef atomic.Pointer[app.Application]
+
+	// listenerDone giữ channel được đóng khi goroutine của Listener thực sự
+	// return. Shutdown path cần ĐỢI channel này trước khi flush sink / lưu
+	// checkpoint — nếu không, MultiSink.Stop() và Shutdown() có thể chạy
+	// trong lúc Listener vẫn còn đang đẩy event mới vào pipeline, dẫn tới
+	// mất dữ liệu hoặc checkpoint bị lưu "chậm" hơn batch cuối cùng thực sự
+	// đã ghi xuống sink. Dùng atomic.Pointer vì goroutine tạo ra nó (bên
+	// trong runCdcCallback) và goroutine đọc nó (shutdown handler) chạy độc
+	// lập với nhau.
+	var listenerDone atomic.Pointer[chan struct{}]
+
 	var configFormLock func()
 
 	errorModal := tview.NewModal().
@@ -148,7 +159,10 @@ func Run() {
 				go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
 				newApp.AutoTuner.Start()
 
+				done := make(chan struct{})
+				listenerDone.Store(&done)
 				go func() {
+					defer close(done)
 					if err := newApp.Listener.Start(ctx, newApp.Config.Provider.Source.URL, newApp.GlobalState); err != nil && err != context.Canceled {
 						slog.Error("Capture stream unexpectedly interrupted", "error", err)
 					}
@@ -274,7 +288,25 @@ func Run() {
 		<-sigChan
 		slog.Info("Received stop signal, starting shutdown process")
 		cancel()
+
 		if runningApp := cdcAppRef.Load(); runningApp != nil {
+			// 1. Đợi Listener dừng hẳn — không còn event mới nào được đẩy
+			//    vào pipeline. Nếu CDC chưa từng được "Run" (listenerDone
+			//    vẫn nil), bỏ qua bước này.
+			if donePtr := listenerDone.Load(); donePtr != nil {
+				<-*donePtr
+			}
+
+			// 2. Flush hết batch còn tồn trong buffer của từng sink. Trước
+			//    bản sửa này, bước này BỊ THIẾU HOÀN TOÀN trong CLI mode,
+			//    khiến mọi batch chưa đủ BatchMaxSize / chưa tới
+			//    BatchTimeout bị bỏ luôn khi thoát app, không kịp ghi
+			//    xuống sink.
+			runningApp.MultiSink.Stop()
+
+			// 3. Lưu checkpoint cuối cùng — BẮT BUỘC chạy sau bước 2, nếu
+			//    không checkpoint ghi ra đĩa sẽ cũ hơn batch vừa flush
+			//    thành công ở trên.
 			runningApp.Shutdown()
 		}
 		tuiApp.Stop()
