@@ -6,7 +6,6 @@ import (
 	"log"
 
 	"my-cdc/cmd/cli"
-	"my-cdc/cmd/server"
 )
 
 func main() {
@@ -23,9 +22,6 @@ func main() {
 	case "cli":
 		log.Println("Starting in Interactive Terminal UI mode...")
 		cli.Run()
-	case "server":
-		log.Println("Starting in Headless Server mode...")
-		server.Run()
 	default:
 		log.Fatalf("Invalid mode: '%s'. Please use 'server' or 'cli'.", *mode)
 	}
