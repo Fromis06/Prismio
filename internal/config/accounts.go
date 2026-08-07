@@ -6,17 +6,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AccountsFile là bảng đăng ký tài khoản dùng CHUNG cho toàn hệ thống — khác với
-// OverrideConfig (giờ chỉ chứa cấu hình vận hành: Provider/Consumers/Performance...)
-// vốn là riêng của từng tài khoản. Bảng này phải tách riêng vì cần đọc được TRƯỚC
-// khi biết ai đang đăng nhập, để còn xác thực; không thể nằm chung trong file cấu
-// hình theo-từng-user vì lúc đó chưa biết nạp file nào.
+// AccountsFile defines the SHARED account registry for the entire system. This is
+// distinct from OverrideConfig, which contains per-user operational settings.
+// This file must be separate because it needs to be read BEFORE a user logs in
+// to perform authentication; it cannot reside in a per-user config file.
 type AccountsFile struct {
-	// Key: API key đã băm SHA-256. Value: username tương ứng.
+	// Key: SHA-256 hashed API key. Value: The corresponding username.
 	HashedAPIKeys map[string]string `yaml:"hashed_api_keys"`
 }
 
-// LoadAccounts đọc bảng tài khoản từ đĩa.
+// LoadAccounts reads the account registry from disk.
 func LoadAccounts(path string) (*AccountsFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -32,8 +31,8 @@ func LoadAccounts(path string) (*AccountsFile, error) {
 	return &af, nil
 }
 
-// SaveAccounts lưu bảng tài khoản xuống đĩa theo cơ chế ghi file tạm rồi rename,
-// tránh file bị hỏng nếu tiến trình bị kill giữa lúc đang ghi.
+// SaveAccounts saves the account registry to disk using a temporary file and rename
+// mechanism to prevent file corruption if the process is terminated mid-write.
 func SaveAccounts(path string, af *AccountsFile) error {
 	if af.HashedAPIKeys == nil {
 		af.HashedAPIKeys = make(map[string]string)

@@ -8,19 +8,19 @@ import (
 	"my-cdc/internal/pb"
 )
 
-// Builder chuyển đổi đối tượng ChangeEvent thành lệnh SQL thô dành cho PostgreSQL.
+// Builder converts a standardized ChangeEvent object into a PostgreSQL-specific SQL command.
 type Builder struct{}
 
-// BuildQuery xây dựng câu lệnh SQL từ ChangeEvent chuẩn hóa
+// BuildQuery constructs a SQL statement from a standardized ChangeEvent.
 func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
-	// Bỏ qua các sự kiện không có tên bảng (VD: dummy event "COMMIT").
+	// Ignore events without a table name, such as logical replication "COMMIT" messages.
 	if e.Table == "" {
 		return "", nil
 	}
 
 	var query strings.Builder
 	var args []any
-	paramIndex := 1 // Đếm số thứ tự của tham số ($1, $2,...)
+	paramIndex := 1 // Counter for placeholder parameters ($1, $2, ...).
 
 	var before, after map[string]any
 	if len(e.Before) > 0 {
@@ -32,7 +32,6 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 
 	switch e.Action {
 	case pb.Action_INSERT:
-		// Xây dựng câu lệnh INSERT INTO ... VALUES ...
 		if len(after) == 0 {
 			return "", nil
 		}
@@ -42,7 +41,6 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 		var colNames []string
 		var placeholders []string
 
-		// Duyệt qua Map để lấy Tên cột và Giá trị
 		for colName, val := range after {
 			colNames = append(colNames, colName)
 			placeholders = append(placeholders, fmt.Sprintf("$%d", paramIndex))
@@ -55,8 +53,8 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 		query.WriteString(strings.Join(placeholders, ", "))
 		query.WriteString(")")
 
-		// Sử dụng ON CONFLICT (Upsert) để đảm bảo tính idempotent.
-		// Nếu một sự kiện được xử lý lại, nó sẽ không tạo ra bản ghi trùng lặp.
+		// Use ON CONFLICT (Upsert) to ensure idempotency.
+		// If an event is re-processed, it will not create a duplicate record.
 		if len(e.KeyNames) > 0 {
 			query.WriteString(" ON CONFLICT (")
 			query.WriteString(strings.Join(e.KeyNames, ", "))
@@ -69,7 +67,7 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 			}
 
 			for _, colName := range colNames {
-				// Chỉ UPDATE các cột không phải là khóa chính.
+				// Only UPDATE columns that are not part of the primary key.
 				if !pkMap[colName] {
 					setClauses = append(setClauses, fmt.Sprintf("%s = EXCLUDED.%s", colName, colName))
 				}
@@ -85,7 +83,6 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 		query.WriteString(";")
 
 	case pb.Action_UPDATE:
-		// Xây dựng câu lệnh UPDATE ... SET ... WHERE ...
 		if len(after) == 0 || len(e.KeyNames) == 0 {
 			return "", nil
 		}
@@ -100,12 +97,10 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 		}
 		query.WriteString(strings.Join(setClauses, ", "))
 
-		// Thêm điều kiện WHERE dựa trên giá trị của khóa chính.
 		query.WriteString(" WHERE ")
 		b.appendWhereClause(&query, &args, &paramIndex, e.KeyNames, before, after)
 
 	case pb.Action_DELETE:
-		// Xây dựng câu lệnh DELETE FROM ... WHERE ...
 		if len(before) == 0 || len(e.KeyNames) == 0 {
 			return "", nil
 		}
@@ -117,14 +112,14 @@ func (b *Builder) BuildQuery(e *pb.ChangeEvent) (string, []any) {
 	return query.String(), args
 }
 
-// appendWhereClause là hàm trợ giúp để xây dựng mệnh đề WHERE
-// dựa trên các cột khóa chính một cách an toàn.
+// appendWhereClause is a helper function to safely build a WHERE clause
+// based on primary key columns.
 func (b *Builder) appendWhereClause(query *strings.Builder, args *[]any, paramIndex *int, keyNames []string, before map[string]any, after map[string]any) {
 	var whereClauses []string
 
 	for _, pkName := range keyNames {
-		// Lấy giá trị khóa chính từ Before (Ưu tiên cho DELETE/UPDATE).
-		// Nếu Before không có (ít xảy ra), lấy fallback từ After.
+		// Prioritize the primary key value from 'before' for DELETE/UPDATE operations.
+		// Fallback to 'after' if 'before' is not available (which is rare).
 		val, exists := before[pkName]
 		if !exists && after != nil {
 			val = after[pkName]

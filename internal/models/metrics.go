@@ -2,11 +2,11 @@ package models
 
 import "sync/atomic"
 
-// EventsCount chứa các biến đếm số liệu cho mục đích theo dõi (monitoring).
-// Sử dụng atomic.Int64 để đảm bảo an toàn khi truy cập từ nhiều goroutine
-// mà không cần dùng tới mutex, giúp tăng hiệu năng.
+// EventsCount holds various counters for monitoring purposes.
+// It uses atomic types to ensure safe concurrent access from multiple goroutines
+// without the need for mutexes, improving performance.
 type EventsCount struct {
-	InsertCount atomic.Int64 // Tổng số sự kiện INSERT đã được xử lý.
-	UpdateCount atomic.Int64 // Tổng số sự kiện UPDATE đã được xử lý.
-	DeleteCount atomic.Int64 // Tổng số sự kiện DELETE đã được xử lý.
+	InsertCount atomic.Int64 // Total number of INSERT events processed.
+	UpdateCount atomic.Int64 // Total number of UPDATE events processed.
+	DeleteCount atomic.Int64 // Total number of DELETE events processed.
 }

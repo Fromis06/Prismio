@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	_ "net/http/pprof" // [Thêm] Import gói pprof để tự động đăng ký các route /debug/pprof
+	_ "net/http/pprof" // Import for side-effect: registers pprof handlers.
 	"runtime"
 	"time"
 
@@ -13,30 +13,30 @@ import (
 	"my-cdc/internal/models"
 )
 
-// StartAdaptiveMonitor khởi động một goroutine để theo dõi hiệu năng hệ thống
-// và tự động điều chỉnh các tham số cấu hình (auto-tuning).
+// StartAdaptiveMonitor starts a background goroutine to monitor system performance.
+// It logs key metrics at a regular interval and exposes HTTP endpoints for
+// pprof and live configuration changes.
 func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Bật PPROF HTTP Server ngầm
+	// Start the HTTP server in a separate goroutine.
 	go func() {
 		port := cfg.Monitor.HttpPort
 		if port == 0 {
-			port = 8080 // Mặc định nếu chưa cấu hình
+			port = 8080 // Default port if not configured.
 		}
 		listenAddr := cfg.Monitor.ListenAddress
 
-		// Đăng ký handler cho PPROF và API cấu hình
 		configHandler := api.NewConfigHandler(cfg)
 		http.Handle("/config", configHandler)
 
 		slog.Info("MONITOR: Bật PPROF", "url", fmt.Sprintf("http://%s:%d/debug/pprof/", listenAddr, port))
 		slog.Info("API: Bật endpoint quản lý cấu hình", "url", fmt.Sprintf("http://%s:%d/config", listenAddr, port), "methods", "GET, POST")
 
-		// Dùng slog thay vì log.Println để lỗi (nếu có) của ListenAndServe cũng
-		// đi qua cùng handler (stdout + panel log dashboard) như mọi log khác,
-		// thay vì ghi thẳng ra os.Stderr và có thể đè lên màn hình TUI.
+		// Use slog so that any server errors are routed through the same logging
+		// pipeline as the rest of the application (e.g., to the TUI panel),
+		// instead of writing to stderr and potentially corrupting the UI.
 		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", listenAddr, port), nil); err != nil {
 			slog.Error("MONITOR: PPROF/API HTTP server dừng với lỗi", "error", err)
 		}
@@ -66,8 +66,8 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 		allocMB := m.Alloc / 1024 / 1024
 		Sys := m.Sys / 1024 / 1024
 
-		// In ra các thông số hiệu năng hiện tại.
-		// Các giá trị này có thể được thay đổi "nóng" từ bên ngoài vì chúng là kiểu atomic.
+		// These configuration values are atomic, so they can be changed live
+		// via the /config API endpoint.
 		liveWorkers := cfg.DataProcessing.DataProcessingWorkerCount.Load()
 		liveBatchSize := cfg.Batch.BatchMaxSize.Load()
 		liveBatchTimeout := cfg.Batch.BatchTimeout.Load()

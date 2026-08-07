@@ -5,14 +5,14 @@ import (
 	"sync/atomic"
 )
 
-// SharedEventBag đóng gói một slice sự kiện với một bộ đếm tham chiếu
-// để đảm bảo nó chỉ được trả về pool sau khi tất cả consumer xử lý xong.
+// SharedEventBag wraps an event slice with a reference counter to ensure
+// it is returned to the pool only after all consumers have finished processing it.
 type SharedEventBag struct {
 	Events   []*pb.ChangeEvent
 	refCount atomic.Int32
 }
 
-// NewSharedEventBag tạo một túi được chia sẻ mới với số tham chiếu ban đầu.
+// NewSharedEventBag creates a new shared bag with an initial reference count.
 func NewSharedEventBag(events []*pb.ChangeEvent, count int32) *SharedEventBag {
 	bag := &SharedEventBag{
 		Events: events,
@@ -21,11 +21,11 @@ func NewSharedEventBag(events []*pb.ChangeEvent, count int32) *SharedEventBag {
 	return bag
 }
 
-// Done báo hiệu rằng một consumer đã xử lý xong túi.
-// Nó giảm bộ đếm tham chiếu và trả túi về pool nếu bộ đếm về 0.
+// Done signals that a consumer has finished with the bag.
+// It decrements the reference counter and returns the bag to the pool if the count reaches zero.
 func (b *SharedEventBag) Done() {
 	if b.refCount.Add(-1) == 0 {
-		// Đây là consumer cuối cùng, trả slice bên dưới về pool.
+		// This was the last consumer, so return the underlying slice to the pool.
 		ChangeEventBagPool.Put(b.Events[:0])
 	}
 }

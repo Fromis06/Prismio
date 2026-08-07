@@ -10,20 +10,22 @@ import (
 	"github.com/rivo/tview"
 )
 
-// Dashboard đóng gói layout cùng tham chiếu tới các panel cần cập nhật live,
-// để StartLiveUpdates có thể ghi vào đúng chỗ mà không cần biết cấu trúc Flex bên ngoài.
+// Dashboard encapsulates the TUI layout and references to live-updating panels.
+// This allows StartLiveUpdates to write to the correct views without needing to know
+// the external Flex layout structure.
 type Dashboard struct {
 	Layout      *tview.Flex
 	statusPanel *tview.TextView
 	logPanel    *tview.TextView
 }
 
-// NewDashboard tạo layout dashboard. Được gọi trước khi Bootstrap xong,
-// nên chưa cần *app.Application ở đây — dữ liệu sống sẽ được nạp qua StartLiveUpdates.
+// NewDashboard creates the main dashboard layout. It is called before the application
+// bootstrap is complete, so it doesn't need an *app.Application instance yet.
+// Live data will be fed in via StartLiveUpdates.
 func NewDashboard(tuiApp *tview.Application) *Dashboard {
 	statusPanel := tview.NewTextView().
 		SetDynamicColors(true).
-		SetText("Đang khởi động...")
+		SetText("Initializing...")
 	statusPanel.SetBorder(true).SetTitle(" System Status ")
 
 	logPanel := tview.NewTextView().
@@ -32,9 +34,9 @@ func NewDashboard(tuiApp *tview.Application) *Dashboard {
 		SetChangedFunc(func() { tuiApp.Draw() })
 	logPanel.SetBorder(true).SetTitle(" Logs ")
 
-	layout := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(statusPanel, 5, 0, false). // Chiều cao cố định 5 dòng, đủ cho 3 chỉ số
-		AddItem(logPanel, 0, 1, true)      // Phần còn lại dành cho log, có focus
+	layout := tview.NewFlex().SetDirection(tview.FlexRow). // Fixed height of 5 rows, enough for the status metrics.
+								AddItem(statusPanel, 5, 0, false). // The rest of the space is for logs, which can be focused.
+								AddItem(logPanel, 0, 1, true)
 
 	return &Dashboard{
 		Layout:      layout,
@@ -43,14 +45,16 @@ func NewDashboard(tuiApp *tview.Application) *Dashboard {
 	}
 }
 
-// LogWriter trả về io.Writer để logger có thể ghi trực tiếp vào logPanel
-// thay vì os.Stdout (vốn bị tview chiếm dụng).
+// LogWriter returns an io.Writer that directs output to the logPanel.
+// This is used to ensure logs are displayed within the TUI instead of interfering
+// with it by writing to the standard output, which tview controls.
 func (d *Dashboard) LogWriter() *tview.TextView {
 	return d.logPanel
 }
 
-// StartLiveUpdates chạy một goroutine nền, định kỳ tính EPS, runtime, tổng số event
-// từ EventsCount và cập nhật statusPanel. Dừng khi ctx bị cancel (graceful shutdown).
+// StartLiveUpdates launches a background goroutine that periodically calculates
+// EPS, runtime, and total event counts, then updates the status panel.
+// It stops when the provided context is canceled.
 func (d *Dashboard) StartLiveUpdates(ctx context.Context, tuiApp *tview.Application, cdcApp *app.Application, interval time.Duration) {
 	startTime := time.Now()
 
@@ -77,8 +81,8 @@ func (d *Dashboard) StartLiveUpdates(ctx context.Context, tuiApp *tview.Applicat
 				lastInsert, lastUpdate, lastDelete = insert, update, del
 				elapsed := time.Since(startTime).Round(time.Second)
 
-				// Mọi thay đổi UI phải qua QueueUpdateDraw vì đang ở goroutine nền,
-				// không phải main loop của tview.
+				// All UI updates must be queued via QueueUpdateDraw because this code
+				// runs in a background goroutine, not the main tview event loop.
 				tuiApp.QueueUpdateDraw(func() {
 					d.statusPanel.SetText(fmt.Sprintf(
 						"[yellow]EPS:[-]           %.0f\n"+

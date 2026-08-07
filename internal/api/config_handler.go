@@ -13,26 +13,26 @@ import (
 	"my-cdc/internal/config"
 )
 
-// ConfigHandler xử lý các yêu cầu HTTP để xem và cập nhật cấu hình "nóng".
+// ConfigHandler handles HTTP requests for viewing and live-updating application configuration.
 type ConfigHandler struct {
 	AppConfig *config.AppConfig
 }
 
-// NewConfigHandler tạo một handler mới với tham chiếu đến AppConfig.
+// NewConfigHandler creates a new handler with a reference to the AppConfig.
 func NewConfigHandler(cfg *config.AppConfig) *ConfigHandler {
 	return &ConfigHandler{
 		AppConfig: cfg,
 	}
 }
 
-// ServeHTTP là phương thức chính xử lý request.
+// ServeHTTP is the main entry point for handling HTTP requests.
 func (h *ConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Kiểm tra API Key
+	// Authenticate the request first.
 	if !h.authenticate(w, r) {
-		return // Lỗi đã được xử lý trong authenticate
+		return // Error is handled within the authenticate method.
 	}
 
-	// Xử lý request nếu đã xác thực thành công
+	// Process the request if authentication was successful.
 	switch r.Method {
 	case http.MethodGet:
 		h.handleGet(w, r)
@@ -43,9 +43,10 @@ func (h *ConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authenticate kiểm tra API Key từ header.
+// authenticate checks for a valid API key in the request header.
 func (h *ConfigHandler) authenticate(w http.ResponseWriter, r *http.Request) bool {
-	// Nếu không có API Key nào được cấu hình, bỏ qua xác thực (chỉ dùng cho dev/test)
+	// If no API keys are configured, skip authentication.
+	// This is intended for development or testing environments only.
 	if len(h.AppConfig.Monitor.HashedAPIKeys) == 0 {
 		return true
 	}
@@ -56,9 +57,8 @@ func (h *ConfigHandler) authenticate(w http.ResponseWriter, r *http.Request) boo
 		return false
 	}
 
-	// Băm API Key nhận được và so sánh bằng hàm hằng số thời gian
+	// Hash the incoming API key and check for its existence in the valid keys map.
 	hashedIncomingKey := HashAPIKey(apiKey)
-	// Kiểm tra xem hash có tồn tại trong map các key hợp lệ không
 	if _, ok := h.AppConfig.Monitor.HashedAPIKeys[hashedIncomingKey]; !ok {
 		http.Error(w, "Unauthorized: Invalid API Key", http.StatusUnauthorized)
 		return false
@@ -66,9 +66,8 @@ func (h *ConfigHandler) authenticate(w http.ResponseWriter, r *http.Request) boo
 	return true
 }
 
-// handleGet trả về các giá trị cấu hình có thể điều chỉnh hiện tại.
+// handleGet returns the current values of the tunable configuration parameters.
 func (h *ConfigHandler) handleGet(w http.ResponseWriter, r *http.Request) {
-	// Lấy các giá trị hiện tại từ các biến atomic
 	currentConfig := map[string]any{
 		"data_processing_worker_count": h.AppConfig.DataProcessing.DataProcessingWorkerCount.Load(),
 		"batch_max_size":               h.AppConfig.Batch.BatchMaxSize.Load(),
@@ -80,7 +79,7 @@ func (h *ConfigHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(currentConfig)
 }
 
-// handlePost nhận và áp dụng các giá trị cấu hình mới.
+// handlePost receives and applies new configuration values.
 func (h *ConfigHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -97,7 +96,7 @@ func (h *ConfigHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("API: Nhận được yêu cầu cập nhật cấu hình", "updates", updates)
 
-	// Cập nhật các giá trị cấu hình một cách an toàn
+	// Atomically update the configuration values.
 	for key, value := range updates {
 		switch key {
 		case "data_processing_worker_count":
@@ -119,25 +118,25 @@ func (h *ConfigHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// HashAPIKey băm chuỗi API Key bằng SHA-256 và trả về dạng hex string.
+// HashAPIKey hashes an API key string using SHA-256 and returns its hex representation.
 func HashAPIKey(key string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-// GenerateNewAPIKey tạo một API key ngẫu nhiên an toàn và hash SHA-256 của nó.
+// GenerateNewAPIKey creates a cryptographically secure random API key and its SHA-256 hash.
+// It returns the raw key (for the user), the hex-encoded hashed key (for storage), and any error.
 func GenerateNewAPIKey() (rawKey string, hashedKey string, err error) {
-	// Tạo 32 byte ngẫu nhiên cho key
 	randomBytes := make([]byte, 32)
 	if _, err := rand.Read(randomBytes); err != nil {
 		return "", "", err
 	}
 
-	// Mã hóa các byte ngẫu nhiên thành chuỗi base64 an toàn cho URL
+	// Encode the random bytes into a URL-safe base64 string.
 	rawKey = base64.URLEncoding.EncodeToString(randomBytes)
 
-	// Băm key gốc
+	// Hash the raw key for storage.
 	hashedKey = HashAPIKey(rawKey)
 
 	return rawKey, hashedKey, nil

@@ -8,13 +8,13 @@ import (
 	"my-cdc/internal/models"
 )
 
-// AutoTuner chịu trách nhiệm tự động điều chỉnh các tham số hệ thống dựa trên số liệu hiệu năng.
+// AutoTuner is responsible for automatically adjusting system parameters based on performance metrics.
 type AutoTuner struct {
 	Config *config.AppConfig
 	Counts *models.EventsCount
 }
 
-// NewAutoTuner tạo một instance mới của AutoTuner.
+// NewAutoTuner creates a new instance of AutoTuner.
 func NewAutoTuner(cfg *config.AppConfig, counts *models.EventsCount) *AutoTuner {
 	return &AutoTuner{
 		Config: cfg,
@@ -22,19 +22,19 @@ func NewAutoTuner(cfg *config.AppConfig, counts *models.EventsCount) *AutoTuner 
 	}
 }
 
-// Start khởi chạy tiến trình tự động điều chỉnh trong một goroutine riêng.
+// Start launches the auto-tuning process in a separate goroutine.
 func (at *AutoTuner) Start() {
 	slog.Info("AUTO-TUNER: Starting...")
 	go at.runLoop()
 }
 
-// runLoop là vòng lặp chính, định kỳ kiểm tra số liệu và điều chỉnh cấu hình.
+// runLoop is the main loop that periodically checks metrics and adjusts the configuration.
 func (at *AutoTuner) runLoop() {
-	// Khoảng thời gian điều chỉnh nên dài hơn khoảng thời gian giám sát
-	// để tránh các thay đổi quá thường xuyên.
+	// The tuning interval should be longer than the monitoring interval
+	// to avoid overly frequent adjustments.
 	interval := time.Duration(at.Config.Monitor.MonitorIntervalSec*2) * time.Second
 	if interval <= 0 {
-		interval = 10 * time.Second // Giá trị dự phòng
+		interval = 10 * time.Second // Fallback value
 	}
 
 	ticker := time.NewTicker(interval)
@@ -43,7 +43,7 @@ func (at *AutoTuner) runLoop() {
 	var lastInsert, lastUpdate, lastDelete int64
 
 	for range ticker.C {
-		// 1. Tính toán EPS hiện tại (logic tương tự monitor)
+		// Calculate the current Events Per Second (EPS).
 		currentInsert := at.Counts.InsertCount.Load()
 		currentUpdate := at.Counts.UpdateCount.Load()
 		currentDelete := at.Counts.DeleteCount.Load()
@@ -55,19 +55,18 @@ func (at *AutoTuner) runLoop() {
 		lastUpdate = currentUpdate
 		lastDelete = currentDelete
 
-		// 2. Áp dụng logic điều chỉnh (hiện tại là placeholder)
+		// Apply the tuning logic based on the calculated EPS.
 		at.applyTuningLogic(eps)
 	}
 }
 
-// applyTuningLogic chứa logic placeholder để điều chỉnh tham số.
-// Hàm này sẽ nhận EPS đã tính và quyết định cần làm gì.
+// applyTuningLogic contains the logic for adjusting system parameters.
+// It takes the current EPS and decides what actions to take.
+// NOTE: This is currently a placeholder for more sophisticated logic.
 func (at *AutoTuner) applyTuningLogic(eps float64) {
-	// Đây là một placeholder. Logic thực tế có thể phức tạp hơn nhiều.
-	// Ý tưởng là hàm này sẽ tính toán các giá trị tối ưu mới
-	// và sau đó áp dụng chúng bằng các phương thức atomic Store.
-
-	highTrafficThreshold := 10000.0 // Ngưỡng này cũng nên được đưa vào config
+	// The idea is that this function will calculate new optimal values
+	// and then apply them using atomic Store methods on the config.
+	highTrafficThreshold := 10000.0 // This threshold should also be configurable.
 
 	if eps > highTrafficThreshold {
 		slog.Info("AUTO-TUNER: Phát hiện lưu lượng cao", "eps", eps, "action", "sử dụng cấu hình cho lưu lượng cao (placeholder)")

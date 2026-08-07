@@ -5,22 +5,22 @@ import (
 	"my-cdc/internal/pb"
 )
 
-// CheckpointFileData chứa thông tin mốc checkpoint để mã hóa JSON lưu xuống đĩa.
+// CheckpointFileData holds checkpoint information for JSON serialization to disk.
 //
-// SourceType là chuỗi tự do (VD: "postgres", "mysql"...), khớp trực tiếp với
-// DBConnection.Type trong config — không còn map qua enum pb.SourceType nữa.
-// Nhờ vậy khi thêm driver nguồn mới, không cần sửa file này hay event.proto.
+// SourceType is a free-form string (e.g., "postgres", "mysql") that directly matches
+// the DBConnection.Type in the configuration. This avoids mapping to a rigid enum,
+// allowing new source drivers to be added without modifying this file or event.proto.
 type CheckpointFileData struct {
-	InstanceName   string         `json:"instance_name"`   // Tên định danh của instance nguồn.
-	SourceType     string         `json:"source_type"`     // Tên loại nguồn (khớp DBConnection.Type).
-	CheckpointData *pb.Checkpoint `json:"checkpoint_data"` // Dữ liệu tọa độ chi tiết.
-	UpdatedAt      int64          `json:"updated_at"`      // Dấu thời gian cập nhật cuối cùng.
+	InstanceName   string         `json:"instance_name"`   // Unique identifier for the source instance.
+	SourceType     string         `json:"source_type"`     // The source type name (matches DBConnection.Type).
+	CheckpointData *pb.Checkpoint `json:"checkpoint_data"` // Detailed coordinate data.
+	UpdatedAt      int64          `json:"updated_at"`      // The last update timestamp.
 }
 
-// BuildChangeEvent tạo ra đối tượng pb.ChangeEvent và marshal map dữ liệu thô sang mảng byte.
+// BuildChangeEvent creates a pb.ChangeEvent object and marshals the raw data maps into byte slices.
 //
-// sourceType là chuỗi tự do (VD: "postgres"), do từng driver Capture tự truyền vào
-// (xem internal/capture/postgres/processor.go) — không còn đi qua bước parse enum.
+// The sourceType is a free-form string (e.g., "postgres") passed in by the specific
+// Capture driver (see internal/capture/postgres/processor.go), avoiding a rigid enum parsing step.
 func BuildChangeEvent(sourceType string, action pb.Action, schema, table string, keyNames []string, before, after map[string]any, offset *pb.Checkpoint) *pb.ChangeEvent {
 	var beforeBytes, afterBytes []byte
 	if before != nil {

@@ -28,18 +28,16 @@ type checkpointFileDTO struct {
 func SaveProviderCheckpoint(dest config.CheckpointSaveDestination, data models.CheckpointFileData) error {
 	folderPath := dest.Path
 
-	// 1. Ensure the storage directory exists.
 	if err := os.MkdirAll(folderPath, 0755); err != nil {
 		return err
 	}
 
-	// 2. Create a filename based on the source type and instance name to avoid duplicates.
-	// SourceType giờ là chuỗi tự do (VD: "postgres"), khớp trực tiếp với DBConnection.Type.
+	// Create a filename based on the source type and instance name to avoid duplicates.
+	// The SourceType is a free-form string (e.g., "postgres") that directly matches DBConnection.Type.
 	fileName := fmt.Sprintf("%s_%s_ckpt.json", data.SourceType, data.InstanceName)
 	fullPath := filepath.Join(folderPath, fileName)
 	tempPath := fullPath + ".tmp"
 
-	// 3. Set the update time just before writing the file.
 	data.UpdatedAt = time.Now().Unix()
 
 	// Use protojson for safe encoding of the Protobuf structure
@@ -52,7 +50,6 @@ func SaveProviderCheckpoint(dest config.CheckpointSaveDestination, data models.C
 		cpDataRaw = b
 	}
 
-	// Convert data to the intermediate DTO
 	dto := checkpointFileDTO{
 		InstanceName:   data.InstanceName,
 		SourceType:     data.SourceType,
@@ -60,7 +57,6 @@ func SaveProviderCheckpoint(dest config.CheckpointSaveDestination, data models.C
 		UpdatedAt:      data.UpdatedAt,
 	}
 
-	// 4. Marshal the data to JSON with pretty formatting.
 	bytes, err := json.MarshalIndent(dto, "", "  ")
 	if err != nil {
 		return err
@@ -76,25 +72,22 @@ func SaveProviderCheckpoint(dest config.CheckpointSaveDestination, data models.C
 
 // LoadProviderCheckpoint reads a checkpoint file from disk and decodes it into a struct.
 //
-// sourceType là chuỗi tự do (VD: "postgres"), khớp DBConnection.Type — không còn
-// dùng pb.SourceType enum nữa, nên driver nguồn mới không cần sửa file này.
+// The sourceType is a free-form string (e.g., "postgres") that matches DBConnection.Type.
+// This avoids using a rigid enum, allowing new source drivers to be added without modifying this file.
 func LoadProviderCheckpoint(dest config.CheckpointSaveDestination, sourceType string, instanceName string) (*models.CheckpointFileData, error) {
 	folderPath := dest.Path
 	fileName := fmt.Sprintf("%s_%s_ckpt.json", sourceType, instanceName)
 	fullPath := filepath.Join(folderPath, fileName)
 
-	// 1. Read the file content.
 	bytes, err := os.ReadFile(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// File does not exist (usually on the first run), return nil, not considered an error.
 			return nil, nil
 		}
-		// Other errors (e.g., no read permission) are still considered errors.
 		return nil, fmt.Errorf("error reading checkpoint file: %w", err)
 	}
 
-	// 2. Unmarshal the JSON content into the intermediate DTO.
 	var dto checkpointFileDTO
 	if err := json.Unmarshal(bytes, &dto); err != nil {
 		return nil, fmt.Errorf("checkpoint file is corrupted (invalid JSON format): %w", err)

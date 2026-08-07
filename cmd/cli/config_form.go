@@ -36,7 +36,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	var startEdit func(rowIdx int)
 	var showAddSinkTypeDropdown func()
 
-	// Hàm persist tự tạo để ghi đè config hiện tại xuống file yaml
+	// persist saves the current configuration to its YAML file.
 	persist := func() {
 		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
 			statusView.SetText(fmt.Sprintf("[red]Lưu config thất bại: %v[-]", saveErr))
@@ -73,10 +73,10 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				if locked {
 					return
 				}
-				// Không còn hardcode Type: "postgres" ở đây nữa — người dùng chọn
-				// loại DB từ danh sách driver đã thực sự đăng ký (sinks.ListRegistered()).
-				// Thêm driver mới vào internal/drivers/drivers.go là dropdown này tự
-				// có thêm lựa chọn, không cần sửa file này.
+				// The sink type is no longer hardcoded. The user selects the DB type
+				// from a list of actually registered drivers (via sinks.ListRegistered()).
+				// Adding a new driver in internal/drivers/drivers.go automatically populates
+				// this dropdown without requiring changes here.
 				showAddSinkTypeDropdown()
 			},
 		})
@@ -208,7 +208,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				}
 				r.Set(newVal)
 				redrawRow(rowIdx)
-				persist() // Đã có hàm persist() xử lý
+				persist()
 				statusView.SetText("")
 			}
 			closeEdit()
@@ -230,13 +230,13 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		tuiApp.SetFocus(input)
 	}
 
-	// showAddSinkTypeDropdown hiển thị 1 dropdown liệt kê mọi Sink đã Register() —
-	// tức mọi driver đã thực sự được compile vào binary qua internal/drivers/drivers.go.
-	// Chọn xong sẽ tạo 1 DBConnection mới với URL được điền sẵn theo Metadata.URLTemplate
-	// của driver đó, rồi mở luôn ô sửa để người dùng thay thông số kết nối thật vào.
+	// showAddSinkTypeDropdown displays a dropdown listing all registered sinks, i.e.,
+	// all drivers compiled into the binary via internal/drivers/drivers.go.
+	// Upon selection, it creates a new DBConnection with a URL pre-filled from the
+	// driver's Metadata.URLTemplate and immediately opens it for editing.
 	//
-	// Thêm 1 driver sink mới không cần sửa gì ở đây — dropdown tự động có thêm lựa chọn
-	// vì danh sách lấy trực tiếp từ sinks.ListRegistered().
+	// Adding a new sink driver requires no changes here; the dropdown is populated
+	// dynamically from sinks.ListRegistered().
 	showAddSinkTypeDropdown = func() {
 		driverList := sinks.ListRegistered()
 		if len(driverList) == 0 {
@@ -275,8 +275,8 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				closeDropdown()
 				rebuildTable()
 				table.Select(newDestRowIdx, 0)
-				// Mở ngay ô sửa URL để người dùng thay thông số kết nối thật,
-				// thay cho template mặc định.
+				// Immediately open the URL for editing, allowing the user to replace
+				// the template with actual connection parameters.
 				startEdit(newDestRowIdx)
 			})
 

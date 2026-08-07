@@ -6,9 +6,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DBConnectionOverride là dạng phẳng của DBConnection dùng để (de)serialize YAML.
-// IsActive dùng con trỏ để phân biệt "không khai báo trong file" (nil -> mặc định true)
-// với "khai báo rõ ràng là false" (tắt đích này).
+// DBConnectionOverride is a flattened version of DBConnection for YAML serialization.
+// IsActive uses a pointer to distinguish between "not declared in file" (nil -> defaults to true)
+// and "explicitly declared as false".
 type DBConnectionOverride struct {
 	Name     string            `yaml:"name"`
 	Type     string            `yaml:"type"`
@@ -21,8 +21,8 @@ type ProviderOverride struct {
 	Source DBConnectionOverride `yaml:"source"`
 }
 
-// PerformanceOverride dùng con trỏ cho mọi field số để có thể phân biệt
-// "không có trong file -> giữ giá trị mặc định" với "có trong file, giá trị = 0".
+// PerformanceOverride uses pointers for all numeric fields to distinguish between
+// "not in file" (keep default value) and "in file with value 0".
 type PerformanceOverride struct {
 	DataProcessingWorkerCount *int32 `yaml:"data_processing_worker_count,omitempty"`
 	BatchMaxSize              *int64 `yaml:"batch_max_size,omitempty"`
@@ -44,19 +44,19 @@ type StateOverride struct {
 	SavePath    string `yaml:"save_path,omitempty"`
 }
 
-// MonitorOverride KHÔNG còn chứa HashedAPIKeys — bảng tài khoản giờ nằm ở
-// accounts.yaml (dùng chung, xem accounts.go), tách khỏi cấu hình vận hành
-// riêng từng user để tránh 2 khái niệm khác nhau bị trộn vào 1 file.
+// MonitorOverride no longer contains HashedAPIKeys. The account registry is now in
+// the shared accounts.yaml (see accounts.go), separating it from per-user
+// operational configuration.
 type MonitorOverride struct {
 	HttpPort           int    `yaml:"http_port,omitempty"`
 	ListenAddress      string `yaml:"listen_address,omitempty"`
 	MonitorIntervalSec int    `yaml:"monitor_interval_sec,omitempty"`
 }
 
-// OverrideConfig là toàn bộ nội dung có thể lưu/đọc từ file cấu hình RIÊNG của
-// 1 tài khoản (VD: configs/<username>.yaml). Khác với AppConfig (chứa
-// atomic.Int64/Int32 để live-tuning trong lúc chạy), OverrideConfig chỉ dùng
-// kiểu dữ liệu thường để (de)serialize YAML thuận tiện.
+// OverrideConfig represents the entire content that can be loaded from or saved to
+// a per-user configuration file (e.g., configs/<username>.yaml). Unlike AppConfig,
+// which uses atomic types for live-tuning, this struct uses plain types for easy
+// YAML serialization.
 type OverrideConfig struct {
 	Provider    ProviderOverride       `yaml:"provider"`
 	Consumers   []DBConnectionOverride `yaml:"consumers"`
@@ -66,7 +66,7 @@ type OverrideConfig struct {
 	Monitor     MonitorOverride        `yaml:"monitor"`
 }
 
-// LoadOverrides đọc file cấu hình từ đĩa.
+// LoadOverrides reads a configuration override file from disk.
 func LoadOverrides(path string) (*OverrideConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -80,9 +80,8 @@ func LoadOverrides(path string) (*OverrideConfig, error) {
 	return &overrides, nil
 }
 
-// SaveOverrides lưu cấu hình xuống đĩa. Ghi vào file tạm rồi rename, cùng nguyên lý
-// với SaveProviderCheckpoint (utils/checkpoint.go), để tránh file config bị hỏng
-// nếu tiến trình bị kill giữa lúc đang ghi.
+// SaveOverrides saves the configuration to disk using a temporary file and rename
+// mechanism (similar to SaveProviderCheckpoint) to prevent corruption.
 func SaveOverrides(path string, overrides *OverrideConfig) error {
 	data, err := yaml.Marshal(overrides)
 	if err != nil {
@@ -95,16 +94,16 @@ func SaveOverrides(path string, overrides *OverrideConfig) error {
 	return os.Rename(tempPath, path)
 }
 
-// SaveFullConfig chụp toàn bộ trạng thái hiện tại của AppConfig (bao gồm mọi consumer
-// đã thêm qua CLI lúc runtime) và lưu xuống file cấu hình của tài khoản đang dùng.
-// Đây là hàm nên dùng thay vì tự dựng OverrideConfig tay, để đảm bảo file trên đĩa
-// luôn khớp với cfg đang chạy.
+// SaveFullConfig captures the entire current state of an AppConfig (including consumers
+// added at runtime via the CLI) and saves it to the user's configuration file.
+// This should be used instead of manually building an OverrideConfig to ensure the
+// file on disk always matches the running config.
 func SaveFullConfig(path string, cfg *AppConfig) error {
 	return SaveOverrides(path, FromAppConfig(cfg))
 }
 
-// FromAppConfig chuyển trạng thái sống (AppConfig, gồm cả atomic) thành OverrideConfig
-// phẳng để có thể marshal ra YAML.
+// FromAppConfig converts a live AppConfig (with atomic types) into a flat
+// OverrideConfig suitable for YAML marshalling.
 func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 	o := &OverrideConfig{}
 
@@ -152,10 +151,9 @@ func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 	return o
 }
 
-// ApplyTo ghi đè các giá trị có trong OverrideConfig lên AppConfig. Field nào không
-// được khai báo trong YAML (chuỗi rỗng, con trỏ nil) thì AppConfig giữ nguyên giá trị
-// mặc định đã có sẵn từ NewDefaultConfig — cho phép file cấu hình chỉ cần liệt kê phần
-// người dùng muốn thay đổi.
+// ApplyTo overwrites an AppConfig with values from an OverrideConfig. Fields not
+// present in the YAML (empty strings, nil pointers) are ignored, so the AppConfig
+// retains its default values from NewDefaultConfig. This allows config files to be sparse.
 func (o *OverrideConfig) ApplyTo(cfg *AppConfig) {
 	if o == nil {
 		return
@@ -163,7 +161,7 @@ func (o *OverrideConfig) ApplyTo(cfg *AppConfig) {
 
 	applyConn(&cfg.Provider.Source, o.Provider.Source)
 
-	// Consumers là danh sách nên override = thay thế toàn bộ, không merge từng phần tử.
+	// The Consumers list is overridden entirely; it is not merged.
 	if len(o.Consumers) > 0 {
 		list := make([]DBConnection, 0, len(o.Consumers))
 		for _, c := range o.Consumers {
@@ -250,7 +248,7 @@ func applyConn(dst *DBConnection, src DBConnectionOverride) {
 	if src.IsActive != nil {
 		dst.IsActive = *src.IsActive
 	} else {
-		dst.IsActive = true // Không khai báo -> mặc định bật, tránh im lặng tắt một đích.
+		dst.IsActive = true // If not specified, defaults to true to avoid silently disabling a destination.
 	}
 	if src.Options != nil {
 		dst.Options = src.Options

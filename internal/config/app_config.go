@@ -8,98 +8,100 @@ import (
 
 // Connectivity
 
-// DBConnection định nghĩa thông tin cơ bản cho một kết nối cơ sở dữ liệu.
+// DBConnection defines the basic information for a database connection.
 type DBConnection struct {
-	Name     string // Tên định danh cho kết nối, dùng trong logging (VD: "postgres_master_db").
-	Type     string // Loại cơ sở dữ liệu (VD: "postgres").
-	URL      string // Chuỗi kết nối đầy đủ (Connection String).
-	IsActive bool   // Cờ để bật/tắt kết nối này.
-	// Options chứa các tham số đặc thù theo từng loại DB (VD: MongoDB: "auth_source",
-	// Kafka: "topic", "sasl_mechanism"...). Sink/Capture cụ thể tự đọc key nó cần,
-	// giúp thêm loại DB mới sau này không phải sửa lại struct config.
+	Name     string // A unique identifier for the connection, used in logging (e.g., "postgres_master_db").
+	Type     string // The type of database (e.g., "postgres", "kafka").
+	URL      string // The full connection string.
+	IsActive bool   // A flag to enable or disable this connection.
+	// Options contains database-specific parameters (e.g., MongoDB: "auth_source",
+	// Kafka: "topic", "sasl_mechanism"). The specific sink/capture implementation
+	// reads the keys it needs, allowing new DB types to be added without
+	// modifying this core config struct.
 	Options map[string]string
 }
-// RetryConfig chứa các tham số cho logic thử lại khi kết nối hoặc thao tác thất bại.
+
+// RetryConfig contains parameters for the retry logic on failed connections or operations.
 type RetryConfig struct {
-	MaxRetries     int `json:"max_retries"`       // Số lần thử lại tối đa trước khi bỏ cuộc.
-	BaseDelayMs    int `json:"base_delay_ms"`     // Thời gian chờ ban đầu (mili giây) trước khi thử lại lần đầu.
-	MaxDelayTimeMs int `json:"max_delay_time_ms"` // Thời gian chờ tối đa (mili giây) giữa các lần thử lại (tránh chờ quá lâu).
+	MaxRetries     int `json:"max_retries"`       // Maximum number of retries before giving up.
+	BaseDelayMs    int `json:"base_delay_ms"`     // Initial delay (in milliseconds) before the first retry.
+	MaxDelayTimeMs int `json:"max_delay_time_ms"` // Maximum delay (in milliseconds) between retries to prevent excessively long waits.
 }
 
-// SourceProviderConfig định nghĩa cấu hình cho nguồn dữ liệu (nơi CDC đọc thay đổi).
+// SourceProviderConfig defines the configuration for the data source (where CDC reads changes from).
 type SourceProviderConfig struct {
-	Source DBConnection // Chỉ hỗ trợ một nguồn duy nhất tại một thời điểm.
-	// Có thể mở rộng thêm: SlotName, PublicationName...
+	Source DBConnection // Only a single source is supported at a time.
+	// Could be extended with fields like SlotName, PublicationName, etc.
 }
 
-// DataConsumerConfig quản lý danh sách các đích dữ liệu (nơi CDC ghi dữ liệu vào).
+// DataConsumerConfig manages the list of data destinations (where CDC writes data to).
 type DataConsumerConfig struct {
-	List []DBConnection // Cho phép ghi ra nhiều đích cùng lúc.
+	List []DBConnection // Allows writing to multiple destinations simultaneously.
 }
 
 // Performance Tuning
-// Các cấu hình trong phần này sử dụng kiểu `atomic` để có thể được điều chỉnh "nóng"
-// "nóng" (live-tuning) trong lúc ứng dụng đang chạy mà không cần khởi động lại.
+// The configurations in this section use atomic types to allow for live-tuning
+// while the application is running, without requiring a restart.
 
-// CaptureConfig cấu hình cho giai đoạn "bắt" dữ liệu từ nguồn.
+// CaptureConfig configures the data capture phase from the source.
 type CaptureConfig struct {
-	CaptureMaxSize   atomic.Int64 // Kích thước tối đa của một lần đọc từ WAL. (Chưa dùng)
-	FeedbackInterval atomic.Int32 // Tần suất (giây) gửi phản hồi StandbyStatus về cho Postgres.
+	CaptureMaxSize   atomic.Int64 // Max size of a single read from the WAL. (Not yet used)
+	FeedbackInterval atomic.Int32 // Frequency (in seconds) for sending StandbyStatus feedback to Postgres.
 }
 
-// PipelineConfig cấu hình cho kênh (channel) trung chuyển.
+// PipelineConfig configures the central processing channel.
 type PipelineConfig struct {
-	PipelineMaxSize atomic.Int32 // Kích thước bộ đệm của kênh chính. (Chưa dùng)
+	PipelineMaxSize atomic.Int32 // Buffer size of the main channel. (Not yet used)
 }
 
-// BagConfig cấu hình cho "túi" chứa sự kiện trước khi gửi đi.
+// BagConfig configures the event "bag" before it is dispatched.
 type BagConfig struct {
-	BagMaxSize     atomic.Int64 // Số lượng sự kiện tiêu chuẩn trong một túi.
-	BagMaxMultiple atomic.Int32 // Hệ số nhân, kích thước túi tối đa = BagMaxSize * BagMaxMultiple.
+	BagMaxSize     atomic.Int64 // The standard number of events in a bag.
+	BagMaxMultiple atomic.Int32 // Multiplier for the maximum bag size (max size = BagMaxSize * BagMaxMultiple).
 }
 
-// DataProcessingWorkerConfig cấu hình số lượng worker xử lý song song.
+// DataProcessingWorkerConfig configures the number of parallel processing workers.
 type DataProcessingWorkerConfig struct {
-	DataProcessingWorkerCount atomic.Int32 // Số goroutine xử lý và xây dựng câu lệnh SQL.
+	DataProcessingWorkerCount atomic.Int32 // Number of goroutines for processing events and building SQL statements.
 }
 
-// BatchConfig cấu hình cho việc gom lô (batching) trước khi ghi vào đích.
+// BatchConfig configures batching before writing to the destination.
 type BatchConfig struct {
-	BatchMaxSize   atomic.Int64 // Số lượng câu lệnh SQL tối đa trong một lô.
-	BatchTimeout   atomic.Int64 // Thời gian (mili giây) chờ tối đa trước khi xả lô, dù chưa đầy.
-	FlushTimeoutMs atomic.Int64 // Thời gian (mili giây) timeout cho một thao tác ghi (flush) xuống DB.
+	BatchMaxSize   atomic.Int64 // Maximum number of SQL statements in a single batch.
+	BatchTimeout   atomic.Int64 // Maximum time (in milliseconds) to wait before flushing a batch, even if not full.
+	FlushTimeoutMs atomic.Int64 // Timeout (in milliseconds) for a single flush operation to the database.
 }
 
 // Stability & Control
 
-// StateStorageConfig cấu hình nơi lưu trữ trạng thái (checkpoint).
+// StateStorageConfig configures where to store the application's state (checkpoint).
 type StateStorageConfig struct {
-	StorageType string `json:"storage_type"` // Loại lưu trữ: "file" hoặc "postgres" (chưa hỗ trợ).
+	StorageType string `json:"storage_type"` // Storage type: "file" or "postgres" (not yet supported).
 }
 
-// FilterConfig cho phép lọc các bảng muốn hoặc không muốn theo dõi.
+// FilterConfig allows filtering which tables to include or exclude from tracking.
 type FilterConfig struct {
-	IncludeTables []string `json:"include_tables"` // Chỉ theo dõi các bảng trong danh sách này.
-	ExcludeTables []string `json:"exclude_tables"` // Bỏ qua các bảng trong danh sách này.
+	IncludeTables []string `json:"include_tables"` // Only track tables in this list.
+	ExcludeTables []string `json:"exclude_tables"` // Ignore tables in this list.
 }
 
-// MonitorConfig cấu hình cho bộ giám sát và auto-tuning.
+// MonitorConfig configures the monitoring and auto-tuning components.
 type MonitorConfig struct {
-	EnableMetrics      bool   `json:"enable_metrics"`       // Bật/tắt endpoint Prometheus. (Chưa dùng)
-	HttpPort           int    `json:"http_port"`            // Cổng HTTP cho endpoint giám sát.
-	ListenAddress      string `json:"listen_address"`       // Địa chỉ lắng nghe cho HTTP server (VD: "localhost", "0.0.0.0").
-	MonitorIntervalSec int    `json:"monitor_interval_sec"` // Tần suất (giây) giám sát và in log.
-	HashedAPIKeys      map[string]string `yaml:"hashed_api_keys"` // Map các khóa API đã băm. Key là hash, value là mô tả.
+	EnableMetrics      bool              `json:"enable_metrics"`       // Enable/disable the Prometheus endpoint. (Not yet used)
+	HttpPort           int               `json:"http_port"`            // HTTP port for the monitoring endpoint.
+	ListenAddress      string            `json:"listen_address"`       // Listen address for the HTTP server (e.g., "localhost", "0.0.0.0").
+	MonitorIntervalSec int               `json:"monitor_interval_sec"` // Frequency (in seconds) for monitoring and logging stats.
+	HashedAPIKeys      map[string]string `yaml:"hashed_api_keys"`      // Map of hashed API keys. Key is the hash, value is a description.
 }
 
-// CheckpointSaveDestination định nghĩa nơi lưu file checkpoint.
+// CheckpointSaveDestination defines where checkpoint files are stored.
 type CheckpointSaveDestination struct {
-	Path string `json:"path"` // Đường dẫn đến thư mục chứa các file checkpoint.
+	Path string `json:"path"` // Path to the directory containing checkpoint files.
 }
 
 // Central Config
 
-// AppConfig là struct gốc, tổng hợp tất cả các cấu hình của ứng dụng.
+// AppConfig is the root struct that aggregates all application configurations.
 type AppConfig struct {
 	Provider        SourceProviderConfig
 	Consumers       DataConsumerConfig
@@ -115,10 +117,10 @@ type AppConfig struct {
 	SaveDestination CheckpointSaveDestination
 }
 
+// NewDefaultConfig creates a new AppConfig instance with sensible default values.
 func NewDefaultConfig() *AppConfig {
 	cfg := &AppConfig{}
 
-	// Cấu hình kết nối mặc định
 	cfg.Provider.Source.URL = ""
 	cfg.Provider.Source.Name = ""
 	cfg.Provider.Source.Type = ""
@@ -130,18 +132,17 @@ func NewDefaultConfig() *AppConfig {
 			IsActive: true,
 		},
 	}
-	// Cấu hình hiệu năng mặc định
+
 	cfg.Capture.CaptureMaxSize.Store(100000)
 	cfg.Capture.FeedbackInterval.Store(10)
 	cfg.Pipeline.PipelineMaxSize.Store(1000)
 	cfg.Bag.BagMaxSize.Store(10000)
 	cfg.Bag.BagMaxMultiple.Store(5)
-	cfg.DataProcessing.DataProcessingWorkerCount.Store(10) // Số worker xử lý
-	cfg.Batch.BatchMaxSize.Store(5000)                     // Kích thước lô
-	cfg.Batch.BatchTimeout.Store(200)                      // Thời gian chờ lô (ms)
+	cfg.DataProcessing.DataProcessingWorkerCount.Store(10)
+	cfg.Batch.BatchMaxSize.Store(5000)
+	cfg.Batch.BatchTimeout.Store(200)
 	cfg.Batch.FlushTimeoutMs.Store(120000)
 
-	// Cấu hình độ tin cậy & giám sát mặc định
 	cfg.Retry.MaxRetries = 3
 	cfg.Retry.BaseDelayMs = 2000
 	cfg.Retry.MaxDelayTimeMs = 30000
@@ -149,14 +150,14 @@ func NewDefaultConfig() *AppConfig {
 	cfg.Monitor.HttpPort = 8080
 	cfg.Monitor.ListenAddress = "localhost"
 	cfg.Monitor.MonitorIntervalSec = 5
-	// Băm API Key mặc định. RẤT QUAN TRỌNG: Thay đổi khóa này trong môi trường sản phẩm!
-	cfg.Monitor.HashedAPIKeys = make(map[string]string) // Khởi tạo map
+
+	// Hash a default API key. IMPORTANT: This key MUST be changed in production environments!
+	cfg.Monitor.HashedAPIKeys = make(map[string]string)
 	defaultAPIKey := "your-super-secret-api-key"
 	hashedDefaultAPIKey := sha256.Sum256([]byte(defaultAPIKey))
 	hexHashedKey := hex.EncodeToString(hashedDefaultAPIKey[:])
-	cfg.Monitor.HashedAPIKeys[hexHashedKey] = "Default key" // Sửa lỗi đánh máy
+	cfg.Monitor.HashedAPIKeys[hexHashedKey] = "Default key"
 
-	// Cấu hình lưu trữ checkpoint
 	cfg.SaveDestination.Path = "./local_checkpoints"
 
 	return cfg

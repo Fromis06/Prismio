@@ -6,28 +6,28 @@ import (
 	"my-cdc/internal/pb"
 )
 
-// QueryBuilder là interface định nghĩa hành vi chuyển đổi một ChangeEvent chuẩn hóa
-// thành một câu lệnh SQL cụ thể cho database đích.
+// QueryBuilder defines the behavior for converting a standardized ChangeEvent
+// into a database-specific SQL statement.
 type QueryBuilder interface {
-	// BuildQuery nhận vào một sự kiện và trả về chuỗi câu lệnh cùng mảng tham số,
-	// giúp chống lại tấn công SQL Injection.
+	// BuildQuery takes an event and returns a query string and a slice of arguments,
+	// which helps prevent SQL injection attacks.
 	BuildQuery(event *pb.ChangeEvent) (query string, args []any)
 }
 
-// DatabaseExecutor là interface chịu trách nhiệm quản lý kết nối vật lý
-// và thực thi các câu lệnh SQL lên database đích.
+// DatabaseExecutor is responsible for managing the physical connection
+// and executing SQL statements on the target database.
 type DatabaseExecutor interface {
-	Init(ctx context.Context, url string) error                                 // Khởi tạo kết nối (VD: tạo connection pool).
-	ExecuteBatch(ctx context.Context, queries []string, argsList [][]any) error // Thực thi một lô câu lệnh.
-	Close() error                                                               // Đóng kết nối và giải phóng tài nguyên.
+	Init(ctx context.Context, url string) error                                 // Initializes the connection (e.g., creates a connection pool).
+	ExecuteBatch(ctx context.Context, queries []string, argsList [][]any) error // Executes a batch of statements.
+	Close() error                                                               // Closes the connection and releases resources.
 }
 
-// Pipeline đại diện cho một luồng xử lý dữ liệu hoàn chỉnh cho một database đích.
-// Nó bao gồm việc nhận dữ liệu, xử lý và ghi xuống đích.
+// Pipeline represents a complete data processing flow for a target database.
+// It includes receiving data, processing it, and writing it to the destination.
 type Pipeline interface {
-	Start() error                              // Khởi động pipeline (VD: chạy các worker goroutine).
-	WriteBatch(events []*pb.ChangeEvent) error // Nhận một "túi" sự kiện (dùng cho kịch bản 1-1).
-	WriteShared(bag *models.SharedEventBag)    // Nhận một "túi" sự kiện đã được chia sẻ (dùng cho kịch bản 1-nhiều).
-	Stop() error                               // Dừng pipeline một cách an toàn (graceful shutdown).
-	IsActive() bool                            // Kiểm tra xem pipeline có còn hoạt động không.
+	Start() error                              // Starts the pipeline (e.g., launches worker goroutines).
+	WriteBatch(events []*pb.ChangeEvent) error // Receives a "bag" of events (for 1-to-1 scenarios).
+	WriteShared(bag *models.SharedEventBag)    // Receives a shared event bag (for 1-to-many scenarios).
+	Stop() error                               // Stops the pipeline gracefully.
+	IsActive() bool                            // Checks if the pipeline is still active.
 }

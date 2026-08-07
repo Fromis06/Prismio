@@ -20,14 +20,14 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/rivo/tview"
 
-	// Đăng ký các Driver (Provider và Consumer) — không phụ thuộc vào
-	// việc cmd/server có được import cùng lúc hay không.
+	// Import drivers to ensure they are registered. This makes them available
+	// to the application's factory functions.
 	_ "my-cdc/internal/drivers"
 )
 
 const (
-	accountsPath = "accounts.yaml" // Bảng tài khoản DÙNG CHUNG — cần đọc trước khi biết ai đăng nhập.
-	configsDir   = "configs"       // Mỗi tài khoản có 1 file cấu hình vận hành riêng: configs/<username>.yaml
+	accountsPath = "accounts.yaml" // SHARED accounts file, read before login to authenticate users.
+	configsDir   = "configs"       // Directory for PER-ACCOUNT operational configs: configs/<username>.yaml
 )
 
 func Run() {
@@ -36,17 +36,16 @@ func Run() {
 	tuiApp := tview.NewApplication()
 	pages := tview.NewPages()
 
-	// Dashboard phải được tạo TRƯỚC khi khởi tạo logger, vì logger cần ghi vào
-	// dashboard.LogWriter(). Trước đây logger.Initialize() được gọi không tham số
-	// ngay dòng đầu hàm Run(), nên toàn bộ log (SINK, CHECKPOINT, Flushing batch...)
-	// chỉ đi ra os.Stdout thô — trong khi tview đang chiếm quyền vẽ màn hình, khiến
-	// log ghi đè lên UI và làm dashboard trông như "không hiện gì" khi bật CDC.
+	// The Dashboard must be created BEFORE initializing the logger.
+	// The logger needs a writer from the dashboard (dashboard.LogWriter()) to pipe logs
+	// into the TUI log panel. If initialized first, logs would go to os.Stdout,
+	// corrupting the tview display.
 	dashboard := NewDashboard(tuiApp)
 	logger.Initialize(dashboard.LogWriter())
 
-	// --- Nạp bảng tài khoản (dùng chung) ---
-	// Đây là dữ liệu DUY NHẤT cần đọc trước khi đăng nhập, vì phải xác thực xong mới
-	// biết nạp file cấu hình vận hành của tài khoản nào (configs/<username>.yaml).
+	// Load the shared accounts file. This is the ONLY data needed before login,
+	// as it's required to authenticate the user and determine which per-account
+	// configuration file (configs/<username>.yaml) to load next.
 	accounts, err := config.LoadAccounts(accountsPath)
 	if err != nil {
 		absPath, _ := filepath.Abs(accountsPath)
@@ -67,13 +66,12 @@ func Run() {
 			pages.HidePage("error")
 		})
 
-	// Modal hiển thị khi Bootstrap thất bại
+	// Modal for displaying bootstrap errors.
 	bootstrapErrorModal := tview.NewModal().AddButtons([]string{"OK"})
 	bootstrapErrorModal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 		pages.SwitchToPage("config") // Quay lại trang config để sửa
 	})
 
-	// Modal hiển thị khi username đã tồn tại
 	usernameExistsModal := tview.NewModal().
 		SetText("Error: Username already exists. Please choose a different username.").
 		AddButtons([]string{"OK"}).
@@ -116,8 +114,9 @@ func Run() {
 		return cfg, userConfigPath
 	}
 
-	// enterWorkspace được gọi ngay sau khi đăng nhập thành công: nạp cấu hình riêng
-	// của tài khoản đó, dựng lại trang Config gắn với đúng cfg này, rồi chuyển màn hình.
+	// enterWorkspace is called after a successful login. It loads the user-specific
+	// configuration, rebuilds the configuration form page with that config,
+	// and switches the TUI to that page.
 	enterWorkspace := func(username string) {
 		cfg, userConfigPath := loadUserConfig(username)
 
@@ -131,8 +130,9 @@ func Run() {
 			}
 
 			go func() {
-				// app.Bootstrap() giờ tự tạo thư mục lưu checkpoint (cfg.SaveDestination.Path)
-				// ngay từ đầu, kể cả khi chưa có transaction nào để lưu — xem internal/app/app.go.
+				// app.Bootstrap now ensures the checkpoint directory exists on startup,
+				// even before any data is processed. This provides early feedback on
+				// permissions issues (fail-fast). See internal/app/app.go for details.
 				newApp, bootstrapErr := app.Bootstrap(ctx, cfg)
 				if bootstrapErr != nil {
 					tuiApp.QueueUpdateDraw(func() {
@@ -165,8 +165,8 @@ func Run() {
 		configForm, lockConfigForm := NewConfigForm(tuiApp, cfg, userConfigPath, runCdcCallback)
 		configFormLock = lockConfigForm
 
-		// Gỡ trang "config" của lần đăng nhập trước (nếu có) trước khi gắn trang mới,
-		// tránh 2 trang trùng tên cùng tồn tại trong Pages.
+		// Remove the previous "config" page (if any) before adding the new one
+		// to avoid having two pages with the same name in the tview.Pages manager.
 		pages.RemovePage("config")
 		pages.AddPage("config", configForm, true, false)
 		pages.SwitchToPage("config")
@@ -178,7 +178,7 @@ func Run() {
 			return
 		}
 
-		// Băm API Key và kiểm tra xem nó có tồn tại và khớp với username không
+		// Hash the input API key and check if it exists and matches the given username.
 		hashedInput := api.HashAPIKey(apiKey)
 		storedUsername, exists := accounts.HashedAPIKeys[hashedInput]
 
@@ -191,16 +191,15 @@ func Run() {
 		}
 	}
 
-	// Form để tạo user mới
+	// Form for creating a new user.
 	createUserForm := tview.NewForm().
 		AddInputField("Username", "", 40, nil, nil).
 		SetFieldBackgroundColor(tview.Styles.PrimitiveBackgroundColor).
 		SetFieldTextColor(tview.Styles.PrimaryTextColor)
 
-	// Callback khi người dùng bấm nút "Create" trên form tạo user.
-	// Chỉ cập nhật bảng tài khoản dùng chung (accounts.yaml) — cấu hình vận hành
-	// riêng của tài khoản mới sẽ tự được tạo (giá trị mặc định) ở lần đăng nhập đầu
-	// tiên, xem loadUserConfig().
+	// This callback handles the "Create" button action on the new user form.
+	// It only updates the shared accounts.yaml file. The new user's specific
+	// operational config will be auto-generated on their first login (see loadUserConfig).
 	createUserAndKey := func() {
 		username := createUserForm.GetFormItem(0).(*tview.InputField).GetText()
 		if username == "" {
@@ -230,7 +229,7 @@ func Run() {
 
 		slog.Info("Successfully generated and saved new account", "path", absPath, "username", username)
 
-		// Hiển thị key cho người dùng
+		// Display the new key to the user.
 		keyDisplayForm := tview.NewForm().
 			AddTextView("Username", username, 0, 1, true, false).
 			AddInputField("API Key (Password)", rawKey, len(rawKey)+5, nil, nil)
@@ -268,7 +267,7 @@ func Run() {
 	pages.AddPage("usernameExists", usernameExistsModal, false, false)
 	pages.AddPage("bootstrap_error", bootstrapErrorModal, false, false)
 
-	// Xử lý graceful shutdown
+	// Handle graceful shutdown on interrupt signals.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
