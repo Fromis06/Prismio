@@ -13,8 +13,12 @@ import (
 // Uses a TextHandler instead of JSON here: when logs are streamed into a
 // TUI panel, human readability matters more than machine-parseable output.
 func Initialize(extraWriters ...io.Writer) {
-	writers := append([]io.Writer{os.Stdout}, extraWriters...)
-	out := io.MultiWriter(writers...)
+	var out io.Writer
+	if len(extraWriters) > 0 {
+		out = io.MultiWriter(extraWriters...)
+	} else {
+		out = os.Stdout
+	}
 
 	handler := slog.NewTextHandler(out, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
