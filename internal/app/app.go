@@ -30,6 +30,24 @@ type Application struct {
 // Bootstrap initializes all major components of the application.
 // This function should only be called after the configuration has been loaded and validated.
 func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error) {
+	// Fail fast with a clear message instead of letting CreateListener /
+	// BuildAndAddPipeline fail later with a generic "unsupported type: ''"
+	// error when the source or every destination was left unconfigured.
+	if cfg.Provider.Source.Type == "" {
+		return nil, fmt.Errorf("chưa chọn nguồn dữ liệu (source): vui lòng cấu hình trước khi chạy")
+	}
+
+	hasActiveConsumer := false
+	for _, c := range cfg.Consumers.List {
+		if c.IsActive && c.Type != "" {
+			hasActiveConsumer = true
+			break
+		}
+	}
+	if !hasActiveConsumer {
+		return nil, fmt.Errorf("cần ít nhất 1 đích đến (destination) đang hoạt động trước khi chạy")
+	}
+
 	poolCapacity := int(cfg.Bag.BagMaxSize.Load() * int64(cfg.Bag.BagMaxMultiple.Load()))
 	models.InitBagPool(poolCapacity)
 

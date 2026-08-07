@@ -124,14 +124,13 @@ func NewDefaultConfig() *AppConfig {
 	cfg.Provider.Source.URL = ""
 	cfg.Provider.Source.Name = ""
 	cfg.Provider.Source.Type = ""
-	cfg.Consumers.List = []DBConnection{
-		{
-			Name:     "",
-			Type:     "",
-			URL:      "",
-			IsActive: true,
-		},
-	}
+
+	// Consumers.List intentionally starts empty. Previously it was seeded with
+	// a single Type-less entry, which the UI had no way to fix or remove and
+	// caused Bootstrap to fail with an unhelpful "unsupported consumer type"
+	// error. Now every destination — including the first one — is created
+	// explicitly through the config UI's "choose a type" dropdown (see
+	// cmd/cli/config_form.go), the same way the source is now chosen too.
 
 	cfg.Capture.CaptureMaxSize.Store(100000)
 	cfg.Capture.FeedbackInterval.Store(10)
