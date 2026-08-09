@@ -2,6 +2,8 @@
 
 Prismio is a standalone, single-language Change Data Capture (CDC) engine built entirely in Golang. Designed as a high-efficiency alternative to heavy, infrastructure-dependent frameworks like Kafka Connect or Debezium, Prismio implements an intelligent self-optimizing data pipeline to capture and replicate real-time database changes with a minimal hardware footprint.
 
+![alt text](https://private-user-images.githubusercontent.com/174935289/633381243-d2f892fa-e25f-4270-a457-243689777be3.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODYyNjg2NTgsIm5iZiI6MTc4NjI2ODM1OCwicGF0aCI6Ii8xNzQ5MzUyODkvNjMzMzgxMjQzLWQyZjg5MmZhLWUyNWYtNDI3MC1hNDU3LTI0MzY4OTc3N2JlMy5naWY_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwODA5JTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDgwOVQwOTM5MThaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT0wZmQ4MjQyYjhkOTg1ODU4ODhjNzE5ZWY4NjVhZWVmMTBhYTI5NmUxZGUyZmQwMTg2YmJjNTA5N2E0Mjc2NmMzJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZnaWYifQ.oUaD1X4oyXtN7E7iPC5kseihNWlCeX1c_O-oOD2CuaA)
+
 ## Key Features
 
 - **Zero-Dependency Core Architecture:** Operates as a single binary without requiring external message brokers or complex multi-language runtime environments.
