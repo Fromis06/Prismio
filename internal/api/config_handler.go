@@ -13,7 +13,20 @@ import (
 	"my-cdc/internal/config"
 )
 
-// ConfigHandler handles HTTP requests for viewing and live-updating application configuration.
+// ConfigHandler handles HTTP requests for viewing and live-updating application
+// configuration.
+//
+// TRẠNG THÁI: KHÔNG được gọi/khởi động ở đâu trong app hiện tại — xem
+// internal/utils/monitor.go, khối "DISABLED: remote HTTP server". Được giữ
+// nguyên (không xoá) vì đây là hạ tầng dự phòng cho use-case CDC chạy trên
+// máy khác với máy admin, sẽ cần một cách bắn thay đổi cấu hình từ xa. File
+// này vẫn compile bình thường (Go không báo lỗi với hàm/type không dùng tới,
+// chỉ báo lỗi với import/biến không dùng), nên an toàn để giữ lại "chờ" mà
+// không ảnh hưởng build hay runtime hiện tại.
+//
+// Khi bật lại, xem 4 điểm cần rà trong comment của StartAdaptiveMonitor
+// (internal/utils/monitor.go), đặc biệt là việc tách pprof khỏi route này và
+// rà lại cơ chế auth cho khớp với accounts.yaml / configs/<username>.yaml.
 type ConfigHandler struct {
 	AppConfig *config.AppConfig
 }
@@ -119,6 +132,10 @@ func (h *ConfigHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 // HashAPIKey hashes an API key string using SHA-256 and returns its hex representation.
+//
+// LƯU Ý: hàm này vẫn ĐANG được dùng ở nơi khác (cmd/cli/run.go — xác thực
+// login TUI và tạo tài khoản mới), không phụ thuộc vào việc ConfigHandler có
+// được bật hay không.
 func HashAPIKey(key string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
@@ -127,6 +144,9 @@ func HashAPIKey(key string) string {
 
 // GenerateNewAPIKey creates a cryptographically secure random API key and its SHA-256 hash.
 // It returns the raw key (for the user), the hex-encoded hashed key (for storage), and any error.
+//
+// LƯU Ý: cũng đang được dùng cho việc tạo user mới trong TUI, độc lập với
+// ConfigHandler.
 func GenerateNewAPIKey() (rawKey string, hashedKey string, err error) {
 	randomBytes := make([]byte, 32)
 	if _, err := rand.Read(randomBytes); err != nil {

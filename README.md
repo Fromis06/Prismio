@@ -9,7 +9,6 @@ Prismio is a standalone, single-language Change Data Capture (CDC) engine built 
 - **Medium-High Performance Handling:** Leverages Go's native concurrency primitives (`Goroutines` and `Channels`) to process intense data workloads efficiently.
 - **Resilient Memory Management:** Features custom buffering and overflow logic mechanisms to protect system stability and prevent memory exhaustion during sudden traffic spikes.
 - **Integrated Monitoring Dashboard:** A built-in terminal UI delivering real-time telemetry on pipeline health, queue sizes, throughput, and replication latency.
-- **Extensible by Design:** Adding a new source or destination driver only requires creating new files under `internal/capture/<name>` or `internal/sinks/<name>` and registering them — no changes to existing shared code.
 
 ---
 
