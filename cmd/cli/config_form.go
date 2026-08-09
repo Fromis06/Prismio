@@ -22,7 +22,7 @@ type configRow struct {
 	Set           func(newVal string)
 	IsAction      bool
 	OnAction      func()
-	IsCheckStatus bool                // true for "Check kết nối" action rows
+	IsCheckStatus bool               // true for "Check kết nối" action rows
 	StatusColor   func() tcell.Color // color for the value column, when IsCheckStatus
 }
 
@@ -251,6 +251,10 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			},
 		})
 
+		// --- Performance tuning (8 biến, tất cả đều chỉnh được qua TUI) ---
+		// Xem TuningConfig / AutoTuner: những biến này chỉ thực sự bị
+		// AutoTuner ghi đè khi chế độ đang là "automatic" (nút Manual/
+		// Automatic ở buttonBar bên dưới bảng).
 		newRows = append(newRows,
 			configRow{
 				Label: "Worker Count",
@@ -295,6 +299,81 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Set: func(v string) {
 					n, _ := strconv.ParseInt(v, 10, 64)
 					cfg.Batch.BatchTimeout.Store(n)
+				},
+			},
+			configRow{
+				Label: "Flush Timeout (ms)",
+				Get:   func() string { return strconv.FormatInt(cfg.Batch.FlushTimeoutMs.Load(), 10) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Flush Timeout phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 64)
+					cfg.Batch.FlushTimeoutMs.Store(n)
+				},
+			},
+			configRow{
+				Label: "Bag Max Size",
+				Get:   func() string { return strconv.FormatInt(cfg.Bag.BagMaxSize.Load(), 10) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Bag Max Size phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 64)
+					cfg.Bag.BagMaxSize.Store(n)
+				},
+			},
+			configRow{
+				Label: "Bag Max Multiple",
+				Get:   func() string { return strconv.Itoa(int(cfg.Bag.BagMaxMultiple.Load())) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 32)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Bag Max Multiple phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 32)
+					cfg.Bag.BagMaxMultiple.Store(int32(n))
+				},
+			},
+			configRow{
+				Label: "Feedback Interval (s)",
+				Get:   func() string { return strconv.Itoa(int(cfg.Capture.FeedbackInterval.Load())) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 32)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Feedback Interval phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 32)
+					cfg.Capture.FeedbackInterval.Store(int32(n))
+				},
+			},
+			configRow{
+				Label: "Pipeline Max Size",
+				Get:   func() string { return strconv.Itoa(int(cfg.Pipeline.PipelineMaxSize.Load())) },
+				Validate: func(v string) error {
+					n, err := strconv.ParseInt(v, 10, 32)
+					if err != nil || n <= 0 {
+						return fmt.Errorf("Pipeline Max Size phải là số nguyên dương")
+					}
+					return nil
+				},
+				Set: func(v string) {
+					n, _ := strconv.ParseInt(v, 10, 32)
+					cfg.Pipeline.PipelineMaxSize.Store(int32(n))
 				},
 			},
 		)
@@ -573,6 +652,54 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 	buttonBar := tview.NewForm().SetButtonsAlign(tview.AlignLeft)
 	buttonBar.AddButton("Copy dòng đang chọn", copySelected)
+
+	// --- Chế độ AutoTuner: Manual / Automatic ---
+	// Manual  -> AutoTuner.Start() không được gọi khi Run CDC (xem cmd/cli/run.go);
+	//            các giá trị người dùng nhập ở bảng trên giữ nguyên suốt quá trình chạy.
+	// Automatic -> AutoTuner.Start() được gọi, các biến real-time-tunable có thể
+	//            bị AutoTuner ghi đè trong lúc CDC đang chạy.
+	var updateModeButtons func()
+
+	buttonBar.AddButton("Manual", func() {
+		if locked {
+			return
+		}
+		cfg.Tuning.Mode = "manual"
+		persist()
+		updateModeButtons()
+		statusView.SetText("[green]Chế độ: Manual — AutoTuner sẽ bị khoá khi chạy CDC[-]")
+	})
+	manualBtnIdx := buttonBar.GetButtonCount() - 1
+
+	buttonBar.AddButton("Automatic", func() {
+		if locked {
+			return
+		}
+		cfg.Tuning.Mode = "automatic"
+		persist()
+		updateModeButtons()
+		statusView.SetText("[green]Chế độ: Automatic — AutoTuner sẽ được kích hoạt khi chạy CDC[-]")
+	})
+	autoBtnIdx := buttonBar.GetButtonCount() - 1
+
+	updateModeButtons = func() {
+		if btn := buttonBar.GetButton(manualBtnIdx); btn != nil {
+			if cfg.Tuning.Mode == "automatic" {
+				btn.SetLabel("○ Manual")
+			} else {
+				btn.SetLabel("● Manual")
+			}
+		}
+		if btn := buttonBar.GetButton(autoBtnIdx); btn != nil {
+			if cfg.Tuning.Mode == "automatic" {
+				btn.SetLabel("● Automatic")
+			} else {
+				btn.SetLabel("○ Automatic")
+			}
+		}
+	}
+	// Khởi tạo label đúng theo giá trị đã load từ config (mặc định "manual").
+	updateModeButtons()
 
 	running := false
 	const runButtonLabel = "Run CDC"

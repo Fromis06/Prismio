@@ -157,7 +157,21 @@ func Run() {
 
 				newApp.MultiSink.Start()
 				go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
-				newApp.AutoTuner.Start()
+
+				// Chế độ AutoTuner được chọn ở trang config (nút Manual / Automatic,
+				// xem cmd/cli/config_form.go) quyết định AutoTuner có được phép chạy
+				// hay không:
+				//   - "manual": KHÔNG gọi AutoTuner.Start() -> không goroutine nào
+				//     ghi đè lên các giá trị người dùng vừa cấu hình, chúng giữ
+				//     nguyên (bị "khoá") trong suốt vòng đời của lần chạy này.
+				//   - "automatic": AutoTuner.Start() được gọi, các biến
+				//     real-time-tunable có thể bị AutoTuner điều chỉnh khi đang chạy.
+				if newApp.Config.Tuning.Mode == "automatic" {
+					newApp.AutoTuner.Start()
+					slog.Info("AUTO-TUNER: Đang chạy ở chế độ Automatic")
+				} else {
+					slog.Info("AUTO-TUNER: Bị khoá (chế độ Manual) — dùng nguyên config người dùng đã thiết lập")
+				}
 
 				done := make(chan struct{})
 				listenerDone.Store(&done)

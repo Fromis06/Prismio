@@ -42,16 +42,28 @@ type DataConsumerConfig struct {
 // Performance Tuning
 // The configurations in this section use atomic types to allow for live-tuning
 // while the application is running, without requiring a restart.
+//
+// NOTE: not every field here can actually be changed while the app is running —
+// some are only ever read once, at startup (see field-level comments below).
+// Whether live-tuning takes effect at all is also gated by TuningConfig.Mode
+// (see below): in "manual" mode the AutoTuner goroutine is never started, so
+// nothing writes to these atomics after Bootstrap; in "automatic" mode it may.
 
 // CaptureConfig configures the data capture phase from the source.
 type CaptureConfig struct {
-	CaptureMaxSize   atomic.Int64 // Max size of a single read from the WAL. (Not yet used)
 	FeedbackInterval atomic.Int32 // Frequency (in seconds) for sending StandbyStatus feedback to Postgres.
+	// Read only once, when Listener.Start() creates its ticker — changing this
+	// value while the CDC is already running has no effect until next restart.
 }
 
 // PipelineConfig configures the central processing channel.
 type PipelineConfig struct {
-	PipelineMaxSize atomic.Int32 // Buffer size of the main channel. (Not yet used)
+	// PipelineMaxSize sets the buffer capacity of the main event channel
+	// (DataProcessor.EventChan). Read only once, when the channel is created
+	// in NewDataProcessor() during Bootstrap — Go channels cannot be resized
+	// after creation, so changing this value while the CDC is already running
+	// has no effect until next restart.
+	PipelineMaxSize atomic.Int32
 }
 
 // BagConfig configures the event "bag" before it is dispatched.
@@ -94,6 +106,21 @@ type MonitorConfig struct {
 	HashedAPIKeys      map[string]string `yaml:"hashed_api_keys"`      // Map of hashed API keys. Key is the hash, value is a description.
 }
 
+// TuningConfig controls whether the AutoTuner is allowed to adjust the
+// performance-tuning fields above (Capture/Pipeline/Bag/DataProcessing/Batch)
+// while the CDC is running.
+type TuningConfig struct {
+	// Mode is either "manual" or "automatic".
+	//
+	//   - "manual": AutoTuner.Start() is never called (see cmd/cli/run.go).
+	//     The values the user set in the config UI stay fixed for the entire
+	//     run — nothing else writes to the atomics above.
+	//   - "automatic": AutoTuner.Start() is called and may adjust the
+	//     real-time-tunable atomics while the CDC is running (see
+	//     internal/tuning/auto_tuner.go for which ones currently apply).
+	Mode string `json:"mode" yaml:"mode"`
+}
+
 // CheckpointSaveDestination defines where checkpoint files are stored.
 type CheckpointSaveDestination struct {
 	Path string `json:"path"` // Path to the directory containing checkpoint files.
@@ -114,6 +141,7 @@ type AppConfig struct {
 	Retry           RetryConfig
 	Filter          FilterConfig
 	Monitor         MonitorConfig
+	Tuning          TuningConfig
 	SaveDestination CheckpointSaveDestination
 }
 
@@ -132,7 +160,6 @@ func NewDefaultConfig() *AppConfig {
 	// explicitly through the config UI's "choose a type" dropdown (see
 	// cmd/cli/config_form.go), the same way the source is now chosen too.
 
-	cfg.Capture.CaptureMaxSize.Store(100000)
 	cfg.Capture.FeedbackInterval.Store(10)
 	cfg.Pipeline.PipelineMaxSize.Store(1000)
 	cfg.Bag.BagMaxSize.Store(10000)
@@ -149,6 +176,12 @@ func NewDefaultConfig() *AppConfig {
 	cfg.Monitor.HttpPort = 8080
 	cfg.Monitor.ListenAddress = "localhost"
 	cfg.Monitor.MonitorIntervalSec = 5
+
+	// Default to "manual": AutoTuner's tuning logic (applyTuningLogic) is
+	// still a placeholder today, so starting the CDC without ever touching
+	// the mode should not risk having something silently rewrite the user's
+	// config. Switch to "automatic" explicitly in the config UI once wanted.
+	cfg.Tuning.Mode = "manual"
 
 	// Hash a default API key. IMPORTANT: This key MUST be changed in production environments!
 	cfg.Monitor.HashedAPIKeys = make(map[string]string)

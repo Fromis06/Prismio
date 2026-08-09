@@ -31,6 +31,7 @@ type PerformanceOverride struct {
 	BagMaxSize                *int64 `yaml:"bag_max_size,omitempty"`
 	BagMaxMultiple            *int32 `yaml:"bag_max_multiple,omitempty"`
 	FeedbackIntervalSec       *int32 `yaml:"feedback_interval_sec,omitempty"`
+	PipelineMaxSize           *int32 `yaml:"pipeline_max_size,omitempty"`
 }
 
 type RetryOverride struct {
@@ -53,6 +54,12 @@ type MonitorOverride struct {
 	MonitorIntervalSec int    `yaml:"monitor_interval_sec,omitempty"`
 }
 
+// TuningOverride persists the AutoTuner mode ("manual" / "automatic") across
+// restarts, the same way every other per-account operational setting does.
+type TuningOverride struct {
+	Mode string `yaml:"mode,omitempty"`
+}
+
 // OverrideConfig represents the entire content that can be loaded from or saved to
 // a per-user configuration file (e.g., configs/<username>.yaml). Unlike AppConfig,
 // which uses atomic types for live-tuning, this struct uses plain types for easy
@@ -64,6 +71,7 @@ type OverrideConfig struct {
 	Retry       RetryOverride          `yaml:"retry"`
 	State       StateOverride          `yaml:"state"`
 	Monitor     MonitorOverride        `yaml:"monitor"`
+	Tuning      TuningOverride         `yaml:"tuning"`
 }
 
 // LoadOverrides reads a configuration override file from disk.
@@ -120,6 +128,7 @@ func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 	bagMaxSize := cfg.Bag.BagMaxSize.Load()
 	bagMaxMultiple := cfg.Bag.BagMaxMultiple.Load()
 	feedbackInterval := cfg.Capture.FeedbackInterval.Load()
+	pipelineMaxSize := cfg.Pipeline.PipelineMaxSize.Load()
 
 	o.Performance = PerformanceOverride{
 		DataProcessingWorkerCount: &workerCount,
@@ -129,6 +138,7 @@ func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 		BagMaxSize:                &bagMaxSize,
 		BagMaxMultiple:            &bagMaxMultiple,
 		FeedbackIntervalSec:       &feedbackInterval,
+		PipelineMaxSize:           &pipelineMaxSize,
 	}
 
 	o.Retry = RetryOverride{
@@ -146,6 +156,10 @@ func FromAppConfig(cfg *AppConfig) *OverrideConfig {
 		HttpPort:           cfg.Monitor.HttpPort,
 		ListenAddress:      cfg.Monitor.ListenAddress,
 		MonitorIntervalSec: cfg.Monitor.MonitorIntervalSec,
+	}
+
+	o.Tuning = TuningOverride{
+		Mode: cfg.Tuning.Mode,
 	}
 
 	return o
@@ -194,6 +208,9 @@ func (o *OverrideConfig) ApplyTo(cfg *AppConfig) {
 	if p.FeedbackIntervalSec != nil {
 		cfg.Capture.FeedbackInterval.Store(*p.FeedbackIntervalSec)
 	}
+	if p.PipelineMaxSize != nil {
+		cfg.Pipeline.PipelineMaxSize.Store(*p.PipelineMaxSize)
+	}
 
 	r := o.Retry
 	if r.MaxRetries != nil {
@@ -221,6 +238,12 @@ func (o *OverrideConfig) ApplyTo(cfg *AppConfig) {
 	}
 	if o.Monitor.MonitorIntervalSec != 0 {
 		cfg.Monitor.MonitorIntervalSec = o.Monitor.MonitorIntervalSec
+	}
+
+	// If not present in an older config file (before this field existed),
+	// NewDefaultConfig's "manual" default is left untouched.
+	if o.Tuning.Mode != "" {
+		cfg.Tuning.Mode = o.Tuning.Mode
 	}
 }
 
