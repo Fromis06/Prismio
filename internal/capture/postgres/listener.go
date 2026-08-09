@@ -117,6 +117,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					WALWritePosition: pglogrepl.LSN(confirmedLSN),
 					WALFlushPosition: pglogrepl.LSN(confirmedLSN),
 					WALApplyPosition: pglogrepl.LSN(confirmedLSN),
+					ReplyRequested:   true,
 				})
 
 				if errUpdate == nil {
