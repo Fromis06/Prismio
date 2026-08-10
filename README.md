@@ -118,7 +118,11 @@ After logging in, you'll land on the configuration screen:
 5. Once every check row shows OK, click **Run CDC** to start the pipeline.
 
 Performance parameters (Worker Count, Batch Size, Batch Timeout, etc.) can be edited directly in the same configuration table before running.
-
+## 🌐 Remote / Multi-Node Deployment
+1. **Network Setup:** Join all nodes into the same virtual private network using [Tailscale](https://tailscale.com/kb/1017/install) or [ZeroTier](https://docs.zerotier.com/getting-started/).
+2. **PostgreSQL Remote Access:**
+   - Configure `postgresql.conf` (`listen_addresses = '*'`) and `pg_hba.conf` to allow remote connections and replication slots. See [Postgres Client Authentication Guide](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html).
+   - Enable Logical Replication on the Source DB following the [Official Postgres Replication Setup](https://www.postgresql.org/docs/current/logical-replication-config.html).
 ---
 
 ## Notes
