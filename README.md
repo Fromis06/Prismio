@@ -27,12 +27,19 @@ The system was rigorously stress-tested using continuous transaction generations
 ## Deep Dive into Technical Innovations
 
 ### 1. Adaptive Dynamic Batching Engine
+
 While standard streaming engines typically rely on pre-configured batch parameters at runtime, Prismio introduces an adaptive approach by continuously monitoring data velocity in real-time.
+
 - **High Traffic:** Automatically expands the batch size to maximize throughput.
-![alt text](https://private-user-images.githubusercontent.com/174935289/633509150-9d8c1dc9-4105-4e0b-9466-7bff85cde9b6.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODYzMzUzMDEsIm5iZiI6MTc4NjMzNTAwMSwicGF0aCI6Ii8xNzQ5MzUyODkvNjMzNTA5MTUwLTlkOGMxZGM5LTQxMDUtNGUwYi05NDY2LTdiZmY4NWNkZTliNi5naWY_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwODEwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDgxMFQwNDEwMDFaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1iNzljMDc2YzAxMmZjMDkzZDVkODBlNTZhMGFmMTZlNjk1MzU1Y2RjN2Q3ZGJlNjdmM2QyOWVhMGNjYTQyODAyJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZnaWYifQ.bPgtpPFa0WsuIZe6UZwjrVwxF3gAvw_8wu3NDuLWh0E)
+
+  ![alt text](https://private-user-images.githubusercontent.com/174935289/633509150-9d8c1dc9-4105-4e0b-9466-7bff85cde9b6.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODYzMzUzMDEsIm5iZiI6MTc4NjMzNTAwMSwicGF0aCI6Ii8xNzQ5MzUyODkvNjMzNTA5MTUwLTlkOGMxZGM5LTQxMDUtNGUwYi05NDY2LTdiZmY4NWNkZTliNi5naWY_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwODEwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDgxMFQwNDEwMDFaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1iNzljMDc2YzAxMmZjMDkzZDVkODBlNTZhMGFmMTZlNjk1MzU1Y2RjN2Q3ZGJlNjdmM2QyOWVhMGNjYTQyODAyJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZnaWYifQ.bPgtpPFa0WsuIZe6UZwjrVwxF3gAvw_8wu3NDuLWh0E)
+
 - **Low Traffic:** Instantly shrinks the batch window and flushes data down the pipeline, ensuring events do not get stuck waiting for a full batch buffer.
-![alt text](https://private-user-images.githubusercontent.com/174935289/633568985-1efeb3a6-7666-44da-8c7e-b8c2c06e9eaa.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODYzNDU5NTcsIm5iZiI6MTc4NjM0NTY1NywicGF0aCI6Ii8xNzQ5MzUyODkvNjMzNTY4OTg1LTFlZmViM2E2LTc2NjYtNDRkYS04YzdlLWI4YzJjMDZlOWVhYS5naWY_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwODEwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDgxMFQwNzA3MzdaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT0wNjIzMzczNWVjYmJjOTdiZTEwMDkyMzJjMGJkMmJkNTE3OTczN2IzZjM3YTgzNzg0MmM3ZWQ0MzkwOTE2NjVmJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZnaWYifQ.56u-_peSWrEllqCVz68HGT5kky1-DoLd6DC8EinM9Cw)
+
+  ![alt text](https://private-user-images.githubusercontent.com/174935289/633568985-1efeb3a6-7666-44da-8c7e-b8c2c06e9eaa.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODYzNDU5NTcsIm5iZiI6MTc4NjM0NTY1NywicGF0aCI6Ii8xNzQ5MzUyODkvNjMzNTY4OTg1LTFlZmViM2E2LTc2NjYtNDRkYS04YzdlLWI4YzJjMDZlOWVhYS5naWY_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwODEwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDgxMFQwNzA3MzdaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT0wNjIzMzczNWVjYmJjOTdiZTEwMDkyMzJjMGJkMmJkNTE3OTczN2IzZjM3YTgzNzg0MmM3ZWQ0MzkwOTE2NjVmJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZnaWYifQ.56u-_peSWrEllqCVz68HGT5kky1-DoLd6DC8EinM9Cw)
+
 ### 2. Overflow Logic & Memory Guard
+
 To achieve high resilience without heavy cluster dependencies, a proprietary overflow logic is built directly over Go channels. When downstream sinks face transient blockages or sudden input spikes exceed processing capacity, the system triggers memory-safe backpressure management, preventing standard memory exhaustion (OOM crashes).
 
 ---
@@ -118,11 +125,14 @@ After logging in, you'll land on the configuration screen:
 5. Once every check row shows OK, click **Run CDC** to start the pipeline.
 
 Performance parameters (Worker Count, Batch Size, Batch Timeout, etc.) can be edited directly in the same configuration table before running.
-## 🌐 Remote / Multi-Node Deployment
-1. **Network Setup:** Join all nodes into the same virtual private network using [Tailscale](https://tailscale.com/kb/1017/install) or [ZeroTier](https://docs.zerotier.com/getting-started/).
-2. **PostgreSQL Remote Access:**
-   - Configure `postgresql.conf` (`listen_addresses = '*'`) and `pg_hba.conf` to allow remote connections and replication slots. See [Postgres Client Authentication Guide](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html).
-   - Enable Logical Replication on the Source DB following the [Official Postgres Replication Setup](https://www.postgresql.org/docs/current/logical-replication-config.html).
+
+### 5. Remote / multi-node deployment (optional)
+
+1. **Network setup:** Join all nodes into the same virtual private network using [Tailscale](https://tailscale.com/kb/1017/install) or [ZeroTier](https://docs.zerotier.com/getting-started/).
+2. **PostgreSQL remote access:**
+   - Configure `postgresql.conf` (`listen_addresses = '*'`) and `pg_hba.conf` to allow remote connections and replication slots. See the [Postgres client authentication guide](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html).
+   - Enable logical replication on the source DB following the [official Postgres replication setup guide](https://www.postgresql.org/docs/current/logical-replication-config.html).
+
 ---
 
 ## Notes
