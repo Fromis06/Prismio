@@ -27,7 +27,7 @@ The system was rigorously stress-tested using continuous transaction generations
 ## Deep Dive into Technical Innovations
 
 ### 1. Adaptive Dynamic Batching Engine
-Unlike industry standards (e.g., Debezium) where parameters like `batch.size` or `linger.ms` are locked statically at runtime, Prismio monitors incoming data velocity in real-time.
+While standard streaming engines typically rely on pre-configured batch parameters at runtime, Prismio introduces an adaptive approach by continuously monitoring data velocity in real-time.
 - **High Traffic:** Automatically expands the batch size to maximize throughput.
 ![alt text](https://private-user-images.githubusercontent.com/174935289/633509150-9d8c1dc9-4105-4e0b-9466-7bff85cde9b6.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODYzMzUzMDEsIm5iZiI6MTc4NjMzNTAwMSwicGF0aCI6Ii8xNzQ5MzUyODkvNjMzNTA5MTUwLTlkOGMxZGM5LTQxMDUtNGUwYi05NDY2LTdiZmY4NWNkZTliNi5naWY_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwODEwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDgxMFQwNDEwMDFaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1iNzljMDc2YzAxMmZjMDkzZDVkODBlNTZhMGFmMTZlNjk1MzU1Y2RjN2Q3ZGJlNjdmM2QyOWVhMGNjYTQyODAyJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCZyZXNwb25zZS1jb250ZW50LXR5cGU9aW1hZ2UlMkZnaWYifQ.bPgtpPFa0WsuIZe6UZwjrVwxF3gAvw_8wu3NDuLWh0E)
 - **Low Traffic:** Instantly shrinks the batch window and flushes data down the pipeline, ensuring events do not get stuck waiting for a full batch buffer.
