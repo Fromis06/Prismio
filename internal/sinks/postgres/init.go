@@ -11,7 +11,7 @@ import (
 	"my-cdc/internal/utils"
 )
 
-// init tự động đăng ký PostgreSQL Consumer vào Sinks Registry khi package này được import.
+// init automatically registers the PostgreSQL Consumer into the Sinks Registry when this package is imported.
 func init() {
 	sinks.Register(
 		"postgres",
@@ -23,7 +23,7 @@ func init() {
 			builder := &Builder{}
 			executor := &Executor{}
 
-			// Thử kết nối đến DB đích với cơ chế retry
+			// Attempt to connect to the destination DB with a retry mechanism
 			err := utils.DoWithRetry(
 				cfg.Retry.MaxRetries,
 				time.Duration(cfg.Retry.BaseDelayMs)*time.Millisecond,
@@ -33,7 +33,7 @@ func init() {
 				},
 			)
 			if err != nil {
-				return fmt.Errorf("khởi tạo kết nối thất bại: %w", err)
+				return fmt.Errorf("failed to initialize connection: %w", err)
 			}
 
 			pgPipeline := sinks.NewDataProcessor(consumerName, cfg, builder, executor, state)

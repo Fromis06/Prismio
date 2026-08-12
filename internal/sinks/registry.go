@@ -51,7 +51,7 @@ func BuildAndAddPipeline(ctx context.Context, sinkType string, consumerName stri
 	if driver, exists := registry[sinkType]; exists {
 		return driver.Factory(ctx, consumerName, cfg, consumerURL, state, multiSink)
 	}
-	return fmt.Errorf("không hỗ trợ consumer type: %s", sinkType)
+	return fmt.Errorf("unsupported consumer type: %s", sinkType)
 }
 
 // ListRegistered returns a slice of all registered sinks, sorted by name for

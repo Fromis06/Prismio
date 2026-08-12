@@ -28,7 +28,7 @@ func RegisterTester(sinkType string, fn ConnectionTester) {
 func TestConnection(ctx context.Context, sinkType string, url string) error {
 	fn, ok := testers[sinkType]
 	if !ok {
-		return fmt.Errorf("chưa có health-check cho loại sink: %s", sinkType)
+		return fmt.Errorf("no health-check registered for sink type: %s", sinkType)
 	}
 	return fn(ctx, url)
 }

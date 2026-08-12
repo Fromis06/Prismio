@@ -7,7 +7,7 @@ import (
 	"my-cdc/internal/sinks"
 )
 
-// init tự động đăng ký PostgreSQL Provider vào Capture Registry khi package này được import.
+// init automatically registers the PostgreSQL Provider into the Capture Registry when this package is imported.
 func init() {
 	capture.Register(
 		"postgres",

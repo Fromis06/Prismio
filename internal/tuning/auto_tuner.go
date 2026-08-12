@@ -69,8 +69,8 @@ func (at *AutoTuner) applyTuningLogic(eps float64) {
 	highTrafficThreshold := 10000.0 // This threshold should also be configurable.
 
 	if eps > highTrafficThreshold {
-		slog.Info("AUTO-TUNER: Phát hiện lưu lượng cao", "eps", eps, "action", "sử dụng cấu hình cho lưu lượng cao (placeholder)")
+		slog.Info("AUTO-TUNER: High traffic detected", "eps", eps, "action", "using high-traffic configuration (placeholder)")
 	} else {
-		slog.Info("AUTO-TUNER: Phát hiện lưu lượng bình thường", "eps", eps, "action", "sử dụng cấu hình chuẩn (placeholder)")
+		slog.Info("AUTO-TUNER: Normal traffic detected", "eps", eps, "action", "using standard configuration (placeholder)")
 	}
 }

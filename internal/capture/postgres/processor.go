@@ -10,10 +10,10 @@ import (
 	"github.com/jackc/pglogrepl"
 )
 
-// sourceTypeName là tên định danh của driver này, khớp với DBConnection.Type
-// trong config ("postgres") và với tên đã capture.Register() ở init.go.
-// Một driver nguồn mới (VD: internal/capture/mysql) sẽ tự khai hằng số tương tự
-// trong file riêng của nó, không cần sửa gì ở đây.
+// sourceTypeName is this driver's identifier name, matching DBConnection.Type
+// in the config ("postgres") and the name registered via capture.Register() in init.go.
+// A new source driver (e.g., internal/capture/mysql) will declare its own similar
+// constant in its own file, without needing to modify anything here.
 const sourceTypeName = "postgres"
 
 // Processor is responsible for parsing raw WAL packets,

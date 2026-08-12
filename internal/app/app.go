@@ -34,7 +34,7 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 	// BuildAndAddPipeline fail later with a generic "unsupported type: ''"
 	// error when the source or every destination was left unconfigured.
 	if cfg.Provider.Source.Type == "" {
-		return nil, fmt.Errorf("chưa chọn nguồn dữ liệu (source): vui lòng cấu hình trước khi chạy")
+		return nil, fmt.Errorf("no data source selected: please configure it before running")
 	}
 
 	hasActiveConsumer := false
@@ -45,7 +45,7 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 		}
 	}
 	if !hasActiveConsumer {
-		return nil, fmt.Errorf("cần ít nhất 1 đích đến (destination) đang hoạt động trước khi chạy")
+		return nil, fmt.Errorf("at least 1 active destination is required before running")
 	}
 
 	poolCapacity := int(cfg.Bag.BagMaxSize.Load() * int64(cfg.Bag.BagMaxMultiple.Load()))
@@ -61,19 +61,19 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 	// confused with a connection issue. Creating it here allows the application to
 	// fail-fast and informs the user where checkpoints will be stored.
 	if err := os.MkdirAll(cfg.SaveDestination.Path, 0755); err != nil {
-		return nil, fmt.Errorf("không thể tạo thư mục lưu checkpoint [%s]: %w", cfg.SaveDestination.Path, err)
+		return nil, fmt.Errorf("unable to create checkpoint storage directory [%s]: %w", cfg.SaveDestination.Path, err)
 	}
-	slog.Info("CHECKPOINT: Thư mục lưu trữ đã sẵn sàng", "path", cfg.SaveDestination.Path)
+	slog.Info("CHECKPOINT: Storage directory is ready", "path", cfg.SaveDestination.Path)
 
 	// The source type is a string taken directly from the config (e.g., "postgres"),
 	// which must match a driver name registered in the sinks registry.
 	sourceType := cfg.Provider.Source.Type
 	instanceName := cfg.Provider.Source.Name
 
-	slog.Info("CHECKPOINT: Đang kiểm tra lịch sử...")
+	slog.Info("CHECKPOINT: Checking history...")
 	ckptData, err := utils.LoadProviderCheckpoint(cfg.SaveDestination, sourceType, instanceName)
 	if err != nil {
-		return nil, fmt.Errorf("lỗi nghiêm trọng khi đọc file checkpoint: %w", err)
+		return nil, fmt.Errorf("critical error reading checkpoint file: %w", err)
 	}
 
 	recoveredLSN := uint64(0)
@@ -81,11 +81,11 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 		if lsn, ok := ckptData.CheckpointData.Offset.(*pb.Checkpoint_Lsn); ok && lsn.Lsn > 0 {
 			recoveredLSN = lsn.Lsn
 			lastSaved := time.Unix(ckptData.UpdatedAt, 0).Format("2006-01-02 15:04:05")
-			slog.Info("CHECKPOINT: Phục hồi thành công", "lsn", recoveredLSN, "last_saved", lastSaved)
+			slog.Info("CHECKPOINT: Successfully recovered", "lsn", recoveredLSN, "last_saved", lastSaved)
 		}
 	}
 	if recoveredLSN == 0 {
-		slog.Info("CHECKPOINT: Không tìm thấy checkpoint cũ, sẽ bắt đầu từ LSN mới nhất.")
+		slog.Info("CHECKPOINT: No previous checkpoint found, will start from the latest LSN.")
 	}
 
 	// Initialize the starting checkpoint for all active consumers.
@@ -99,21 +99,21 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 
 	for _, consumer := range cfg.Consumers.List {
 		if !consumer.IsActive {
-			slog.Info("SINK: Bỏ qua đích không hoạt động", "sink_name", consumer.Name)
+			slog.Info("SINK: Skipping inactive destination", "sink_name", consumer.Name)
 			continue
 		}
 
 		// Build and add the sink pipeline based on its type.
 		if err := sinks.BuildAndAddPipeline(ctx, consumer.Type, consumer.Name, cfg, consumer.URL, globalState, multiSink); err != nil {
-			return nil, fmt.Errorf("khởi tạo đích [%s] thất bại: %w", consumer.Name, err)
+			return nil, fmt.Errorf("failed to initialize destination [%s]: %w", consumer.Name, err)
 		}
-		slog.Info("SINK: Đã khởi tạo pipeline cho đích", "sink_name", consumer.Name)
+		slog.Info("SINK: Pipeline initialized for destination", "sink_name", consumer.Name)
 	}
 
 	// Initialize the data source (capture listener).
 	listener, err := capture.CreateListener(cfg.Provider.Source.Type, cfg, multiSink, eventsCount)
 	if err != nil {
-		return nil, fmt.Errorf("lỗi khởi tạo nguồn: %w", err)
+		return nil, fmt.Errorf("error initializing source: %w", err)
 	}
 
 	autoTuner := tuning.NewAutoTuner(cfg, eventsCount)
@@ -140,9 +140,9 @@ func (a *Application) Shutdown() {
 			CheckpointData: &pb.Checkpoint{Offset: &pb.Checkpoint_Lsn{Lsn: finalLSN}},
 		}
 		if errSave := utils.SaveProviderCheckpoint(a.Config.SaveDestination, finalData); errSave != nil {
-			slog.Error("CHECKPOINT: Lỗi khi lưu checkpoint cuối cùng", "error", errSave)
+			slog.Error("CHECKPOINT: Error saving final checkpoint", "error", errSave)
 		} else {
-			slog.Info("CHECKPOINT: Đã lưu thành công LSN cuối cùng.", "lsn", finalLSN)
+			slog.Info("CHECKPOINT: Successfully saved final LSN.", "lsn", finalLSN)
 		}
 	} else {
 		// This occurs if the app is shut down before processing any transactions.

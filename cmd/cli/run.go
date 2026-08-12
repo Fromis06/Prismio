@@ -49,7 +49,7 @@ func Run() {
 	accounts, err := config.LoadAccounts(accountsPath)
 	if err != nil {
 		absPath, _ := filepath.Abs(accountsPath)
-		slog.Info("accounts.yaml chưa tồn tại, tạo bảng tài khoản mới (rỗng).", "path", absPath, "error", err)
+		slog.Info("accounts.yaml does not exist yet, creating a new (empty) accounts table.", "path", absPath, "error", err)
 		accounts = &config.AccountsFile{HashedAPIKeys: make(map[string]string)}
 		if saveErr := config.SaveAccounts(accountsPath, accounts); saveErr != nil {
 			slog.Error("Failed to save initial accounts.yaml", "error", saveErr)
@@ -58,14 +58,15 @@ func Run() {
 
 	var cdcAppRef atomic.Pointer[app.Application]
 
-	// listenerDone giữ channel được đóng khi goroutine của Listener thực sự
-	// return. Shutdown path cần ĐỢI channel này trước khi flush sink / lưu
-	// checkpoint — nếu không, MultiSink.Stop() và Shutdown() có thể chạy
-	// trong lúc Listener vẫn còn đang đẩy event mới vào pipeline, dẫn tới
-	// mất dữ liệu hoặc checkpoint bị lưu "chậm" hơn batch cuối cùng thực sự
-	// đã ghi xuống sink. Dùng atomic.Pointer vì goroutine tạo ra nó (bên
-	// trong runCdcCallback) và goroutine đọc nó (shutdown handler) chạy độc
-	// lập với nhau.
+	// listenerDone holds a channel that is closed when the Listener's goroutine
+	// actually returns. The shutdown path needs to WAIT on this channel before
+	// flushing sinks / saving the checkpoint — otherwise, MultiSink.Stop() and
+	// Shutdown() could run while the Listener is still pushing new events into
+	// the pipeline, leading to data loss or the checkpoint being saved "behind"
+	// the last batch that was actually written to the sink. atomic.Pointer is
+	// used because the goroutine that creates it (inside runCdcCallback) and
+	// the goroutine that reads it (the shutdown handler) run independently of
+	// each other.
 	var listenerDone atomic.Pointer[chan struct{}]
 
 	var configFormLock func()
@@ -80,7 +81,7 @@ func Run() {
 	// Modal for displaying bootstrap errors.
 	bootstrapErrorModal := tview.NewModal().AddButtons([]string{"OK"})
 	bootstrapErrorModal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-		pages.SwitchToPage("config") // Quay lại trang config để sửa
+		pages.SwitchToPage("config") // Return to the config page to fix the issue
 	})
 
 	usernameExistsModal := tview.NewModal().
@@ -89,31 +90,31 @@ func Run() {
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) { pages.HidePage("usernameExists") })
 	usernameExistsModal.SetTitle("Username Conflict")
 
-	// loadUserConfig nạp (hoặc khởi tạo mới nếu chưa có) cấu hình vận hành RIÊNG của
-	// 1 tài khoản. Mỗi tài khoản có Source/Consumers/Batch/Worker... độc lập, không
-	// còn dùng chung 1 config.yaml như trước.
+	// loadUserConfig loads (or initializes anew if not present) the operational
+	// configuration SPECIFIC to one account. Each account has its own independent
+	// Source/Consumers/Batch/Worker..., no longer sharing a single config.yaml as before.
 	loadUserConfig := func(username string) (*config.AppConfig, string) {
 		userConfigPath := filepath.Join(configsDir, username+".yaml")
 		cfg := config.NewDefaultConfig()
 
-		// Cô lập thư mục checkpoint theo từng tài khoản để tránh đụng LSN của nhau
-		// khi đổi tài khoản (đặt trước khi ApplyTo, để user vẫn override được nếu muốn).
+		// Isolate the checkpoint directory per account to avoid LSN conflicts
+		// when switching accounts (set before ApplyTo, so the user can still override it if desired).
 		cfg.SaveDestination.Path = filepath.Join("local_checkpoints", username)
 
-		// HashedAPIKeys dùng cho xác thực API HTTP (/config) vẫn lấy từ bảng tài khoản
-		// dùng chung — không phải thứ "riêng của từng user", nên không nằm trong
-		// configs/<username>.yaml.
+		// HashedAPIKeys, used for HTTP API (/config) authentication, still comes from
+		// the shared account table — it's not something "specific to each user", so
+		// it doesn't live in configs/<username>.yaml.
 		cfg.Monitor.HashedAPIKeys = accounts.HashedAPIKeys
 
 		if overrides, loadErr := config.LoadOverrides(userConfigPath); loadErr == nil {
 			absPath, _ := filepath.Abs(userConfigPath)
 			slog.Info("Loaded per-account configuration", "username", username, "path", absPath)
 			overrides.ApplyTo(cfg)
-			// ApplyTo không đụng tới Monitor.HashedAPIKeys (đã bỏ khỏi OverrideConfig),
-			// nên giá trị gán ở trên vẫn giữ nguyên sau bước này.
+			// ApplyTo doesn't touch Monitor.HashedAPIKeys (removed from OverrideConfig),
+			// so the value assigned above remains unchanged after this step.
 		} else {
 			absPath, _ := filepath.Abs(userConfigPath)
-			slog.Info("Chưa có cấu hình riêng cho tài khoản này, tạo mới với giá trị mặc định.", "username", username, "path", absPath, "error", loadErr)
+			slog.Info("No dedicated configuration for this account yet, creating a new one with default values.", "username", username, "path", absPath, "error", loadErr)
 			if mkErr := os.MkdirAll(configsDir, 0755); mkErr != nil {
 				slog.Error("Failed to create configs directory", "error", mkErr)
 			}
@@ -148,7 +149,7 @@ func Run() {
 				if bootstrapErr != nil {
 					tuiApp.QueueUpdateDraw(func() {
 						pages.HidePage("running")
-						bootstrapErrorModal.SetText(fmt.Sprintf("Khởi tạo CDC thất bại:\n%v", bootstrapErr))
+						bootstrapErrorModal.SetText(fmt.Sprintf("Failed to initialize CDC:\n%v", bootstrapErr))
 						pages.ShowPage("bootstrap_error")
 					})
 					return
@@ -158,19 +159,19 @@ func Run() {
 				newApp.MultiSink.Start()
 				go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
 
-				// Chế độ AutoTuner được chọn ở trang config (nút Manual / Automatic,
-				// xem cmd/cli/config_form.go) quyết định AutoTuner có được phép chạy
-				// hay không:
-				//   - "manual": KHÔNG gọi AutoTuner.Start() -> không goroutine nào
-				//     ghi đè lên các giá trị người dùng vừa cấu hình, chúng giữ
-				//     nguyên (bị "khoá") trong suốt vòng đời của lần chạy này.
-				//   - "automatic": AutoTuner.Start() được gọi, các biến
-				//     real-time-tunable có thể bị AutoTuner điều chỉnh khi đang chạy.
+				// The AutoTuner mode selected on the config page (Manual / Automatic
+				// buttons, see cmd/cli/config_form.go) determines whether AutoTuner is
+				// allowed to run:
+				//   - "manual": AutoTuner.Start() is NOT called -> no goroutine
+				//     overwrites the values the user just configured; they stay
+				//     unchanged ("locked") for the entire lifetime of this run.
+				//   - "automatic": AutoTuner.Start() is called, and the
+				//     real-time-tunable variables may be adjusted by AutoTuner while running.
 				if newApp.Config.Tuning.Mode == "automatic" {
 					newApp.AutoTuner.Start()
-					slog.Info("AUTO-TUNER: Đang chạy ở chế độ Automatic")
+					slog.Info("AUTO-TUNER: Running in Automatic mode")
 				} else {
-					slog.Info("AUTO-TUNER: Bị khoá (chế độ Manual) — dùng nguyên config người dùng đã thiết lập")
+					slog.Info("AUTO-TUNER: Locked (Manual mode) — using the config exactly as set by the user")
 				}
 
 				done := make(chan struct{})
@@ -304,23 +305,23 @@ func Run() {
 		cancel()
 
 		if runningApp := cdcAppRef.Load(); runningApp != nil {
-			// 1. Đợi Listener dừng hẳn — không còn event mới nào được đẩy
-			//    vào pipeline. Nếu CDC chưa từng được "Run" (listenerDone
-			//    vẫn nil), bỏ qua bước này.
+			// 1. Wait for the Listener to fully stop — no more new events being
+			//    pushed into the pipeline. If CDC was never "Run" (listenerDone
+			//    is still nil), skip this step.
 			if donePtr := listenerDone.Load(); donePtr != nil {
 				<-*donePtr
 			}
 
-			// 2. Flush hết batch còn tồn trong buffer của từng sink. Trước
-			//    bản sửa này, bước này BỊ THIẾU HOÀN TOÀN trong CLI mode,
-			//    khiến mọi batch chưa đủ BatchMaxSize / chưa tới
-			//    BatchTimeout bị bỏ luôn khi thoát app, không kịp ghi
-			//    xuống sink.
+			// 2. Flush any remaining batches still buffered in each sink. Before
+			//    this fix, this step was COMPLETELY MISSING in CLI mode,
+			//    causing any batch that hadn't reached BatchMaxSize / hadn't
+			//    reached BatchTimeout to be dropped entirely on app exit,
+			//    without being written to the sink in time.
 			runningApp.MultiSink.Stop()
 
-			// 3. Lưu checkpoint cuối cùng — BẮT BUỘC chạy sau bước 2, nếu
-			//    không checkpoint ghi ra đĩa sẽ cũ hơn batch vừa flush
-			//    thành công ở trên.
+			// 3. Save the final checkpoint — MUST run after step 2, otherwise
+			//    the checkpoint written to disk would be older than the batch
+			//    just flushed successfully above.
 			runningApp.Shutdown()
 		}
 		tuiApp.Stop()

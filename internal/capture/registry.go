@@ -10,12 +10,12 @@ import (
 	"my-cdc/internal/sinks"
 )
 
-// Listener định nghĩa hợp đồng chung cho các nguồn Capture.
+// Listener defines the common contract for Capture sources.
 type Listener interface {
 	Start(ctx context.Context, url string, state *models.GlobalState) error
 }
 
-// Factory là hàm khởi tạo sinh ra một Listener cụ thể.
+// Factory is the constructor function that creates a specific Listener.
 type Factory func(cfg *config.AppConfig, multiSink *sinks.MultiSink, eventsCount *models.EventsCount) Listener
 
 // Metadata contains display information for a capture (source) driver type,
@@ -41,21 +41,21 @@ type registeredDriver struct {
 
 var registry = make(map[string]registeredDriver)
 
-// Register đăng ký một Provider mới vào hệ thống, cùng metadata hiển thị của nó.
+// Register registers a new Provider into the system, along with its display metadata.
 func Register(name string, meta Metadata, factory Factory) {
 	registry[name] = registeredDriver{Metadata: meta, Factory: factory}
 }
 
-// CreateListener khởi tạo Listener dựa vào tên Provider cấu hình.
+// CreateListener creates a Listener based on the configured Provider name.
 func CreateListener(name string, cfg *config.AppConfig, multiSink *sinks.MultiSink, eventsCount *models.EventsCount) (Listener, error) {
 	if driver, ok := registry[name]; ok {
 		return driver.Factory(cfg, multiSink, eventsCount), nil
 	}
-	return nil, fmt.Errorf("không tìm thấy provider được hỗ trợ: %s", name)
+	return nil, fmt.Errorf("no supported provider found: %s", name)
 }
 
-// ListRegistered trả về danh sách các driver Source đã đăng ký, sắp xếp theo
-// tên để hiển thị ổn định trên UI (ví dụ dropdown chọn nguồn dữ liệu).
+// ListRegistered returns the list of registered Source drivers, sorted by
+// name for stable display in the UI (e.g., the data-source selection dropdown).
 func ListRegistered() []RegisteredCapture {
 	result := make([]RegisteredCapture, 0, len(registry))
 	for name, driver := range registry {

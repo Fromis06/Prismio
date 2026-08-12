@@ -5,24 +5,24 @@ import ( "sync"
 		"my-cdc/internal/pb"
 )
 
-// [Pattern: Object Pool] ChangeEventBagPool tái sử dụng bộ nhớ slice để giảm tải cho Garbage Collector.
+// [Pattern: Object Pool] ChangeEventBagPool reuses slice memory to reduce the load on the Garbage Collector.
 var ChangeEventBagPool sync.Pool
 
-// QueryPool tái sử dụng slice chứa chuỗi SQL.
+// QueryPool reuses slices containing SQL strings.
 var QueryPool = sync.Pool{
 	New: func() any {
-		return make([]string, 0, 5000) // Cấp phát sẵn capacity
+		return make([]string, 0, 5000) // Pre-allocate capacity
 	},
 }
 
-// ArgsPool tái sử dụng slice chứa mảng tham số.
+// ArgsPool reuses slices containing parameter arrays.
 var ArgsPool = sync.Pool{
 	New: func() any {
 		return make([][]any, 0, 5000)
 	},
 }
 
-// InitBagPool khởi tạo hàm New cho pool với sức chứa (capacity) lấy từ cấu hình.
+// InitBagPool initializes the pool's New function with a capacity taken from the configuration.
 func InitBagPool(capacity int) {
 	ChangeEventBagPool.New = func() any {
 		return make([]*pb.ChangeEvent, 0, capacity)

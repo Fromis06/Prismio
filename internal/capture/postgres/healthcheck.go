@@ -22,14 +22,14 @@ func init() {
 func TestConnection(ctx context.Context, sourceURL string) error {
 	connConfig, err := pgconn.ParseConfig(sourceURL)
 	if err != nil {
-		return fmt.Errorf("không thể parse Source URL: %w", err)
+		return fmt.Errorf("failed to parse Source URL: %w", err)
 	}
 
 	if connConfig.RuntimeParams["slot_name"] == "" {
-		return fmt.Errorf("thiếu slot_name trong Source URL")
+		return fmt.Errorf("missing slot_name in Source URL")
 	}
 	if connConfig.RuntimeParams["publication_names"] == "" {
-		return fmt.Errorf("thiếu publication_names trong Source URL")
+		return fmt.Errorf("missing publication_names in Source URL")
 	}
 	// slot_name/publication_names are custom runtime params understood by our
 	// own listener code, not by Postgres itself — must be stripped before

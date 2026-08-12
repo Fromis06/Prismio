@@ -7,7 +7,7 @@ import (
 	"my-cdc/internal/sinks"
 )
 
-// SourceCapture là giao diện chung cho mọi loại Database Nguồn
+// SourceCapture is the common interface for all types of source databases
 type SourceCapture interface {
 	Start(ctx context.Context, sourceURL string, targetSink sinks.Pipeline, eventsCount *models.EventsCount) error
 	Stop() error

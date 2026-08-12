@@ -21,7 +21,7 @@ func RegisterTester(sourceType string, fn ConnectionTester) {
 func TestConnection(ctx context.Context, sourceType string, url string) error {
 	fn, ok := testers[sourceType]
 	if !ok {
-		return fmt.Errorf("chưa có health-check cho loại nguồn: %s", sourceType)
+		return fmt.Errorf("no health-check registered for source type: %s", sourceType)
 	}
 	return fn(ctx, url)
 }

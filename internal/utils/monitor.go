@@ -25,16 +25,16 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 	// 	configHandler := api.NewConfigHandler(cfg)
 	// 	http.Handle("/config", configHandler)
 	//
-	// 	slog.Info("MONITOR: Bật PPROF", "url", fmt.Sprintf("http://%s:%d/debug/pprof/", listenAddr, port))
-	// 	slog.Info("API: Bật endpoint quản lý cấu hình", "url", fmt.Sprintf("http://%s:%d/config", listenAddr, port), "methods", "GET, POST")
+	// 	slog.Info("MONITOR: Enabling PPROF", "url", fmt.Sprintf("http://%s:%d/debug/pprof/", listenAddr, port))
+	// 	slog.Info("API: Enabling config management endpoint", "url", fmt.Sprintf("http://%s:%d/config", listenAddr, port), "methods", "GET, POST")
 	//
 	// 	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", listenAddr, port), nil); err != nil {
-	// 		slog.Error("MONITOR: PPROF/API HTTP server dừng với lỗi", "error", err)
+	// 		slog.Error("MONITOR: PPROF/API HTTP server stopped with error", "error", err)
 	// 	}
 	// }()
 
 	var lastInsert, lastUpdate, lastDelete int64
-	slog.Info("MONITOR: Đã khởi động", "interval", interval)
+	slog.Info("MONITOR: Started", "interval", interval)
 
 	for range ticker.C {
 		currentInsert := counts.InsertCount.Load()
@@ -57,9 +57,9 @@ func StartAdaptiveMonitor(cfg *config.AppConfig, counts *models.EventsCount, int
 		allocMB := m.Alloc / 1024 / 1024
 		Sys := m.Sys / 1024 / 1024
 
-		// Các giá trị này là atomic nên vẫn có thể chỉnh "live" — nhưng hiện
-		// tại chỉ chỉnh được qua TUI (cmd/cli/config_form.go), không còn qua
-		// HTTP /config nữa cho tới khi tính năng đó được bật lại.
+		// These values are atomic so they can still be adjusted "live" — but
+		// currently they can only be adjusted via the TUI (cmd/cli/config_form.go),
+		// no longer via HTTP /config until that feature is re-enabled.
 		liveWorkers := cfg.DataProcessing.DataProcessingWorkerCount.Load()
 		liveBatchSize := cfg.Batch.BatchMaxSize.Load()
 		liveBatchTimeout := cfg.Batch.BatchTimeout.Load()

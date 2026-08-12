@@ -64,8 +64,9 @@ func (g *GlobalState) GetMinCheckpoint() uint64 {
 
 	return min
 }
-// ActiveSinks trả về danh sách tên các Sink hiện đang có checkpoint
-// (tức là còn hoạt động — RemoveSink() sẽ xoá khỏi map khi sink bị disconnect).
+
+// ActiveSinks returns the list of Sink names that currently have a checkpoint
+// (i.e., are still active — RemoveSink() removes them from the map when a sink disconnects).
 func (g *GlobalState) ActiveSinks() []string {
 	var sinks []string
 	g.checkpoints.Range(func(key, value any) bool {

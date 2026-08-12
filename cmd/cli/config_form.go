@@ -22,7 +22,7 @@ type configRow struct {
 	Set           func(newVal string)
 	IsAction      bool
 	OnAction      func()
-	IsCheckStatus bool               // true for "Check kết nối" action rows
+	IsCheckStatus bool               // true for "Check connection" action rows
 	StatusColor   func() tcell.Color // color for the value column, when IsCheckStatus
 }
 
@@ -37,13 +37,13 @@ type checkState struct {
 func statusText(cs *checkState) string {
 	switch cs.status {
 	case "checking":
-		return "◐ ĐANG CHECK..."
+		return "◐ CHECKING..."
 	case "ok":
 		return "● OK"
 	case "failed":
-		return fmt.Sprintf("● LỖI: %s", cs.errMsg)
+		return fmt.Sprintf("● ERROR: %s", cs.errMsg)
 	default:
-		return "● CHƯA CHECK"
+		return "● NOT CHECKED"
 	}
 }
 
@@ -86,7 +86,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	// persist saves the current configuration to its YAML file.
 	persist := func() {
 		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
-			statusView.SetText(fmt.Sprintf("[red]Lưu config thất bại: %v[-]", saveErr))
+			statusView.SetText(fmt.Sprintf("[red]Failed to save config: %v[-]", saveErr))
 		}
 	}
 
@@ -127,10 +127,10 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	buildRows = func() {
 		var newRows []configRow
 
-		// --- Nguồn dữ liệu (Source / Listener) ---
+		// --- Data source (Source / Listener) ---
 		if cfg.Provider.Source.Type == "" {
 			newRows = append(newRows, configRow{
-				Label:    "     →  Chọn nguồn dữ liệu (source)",
+				Label:    "     →  Choose data source",
 				IsAction: true,
 				Get:      func() string { return "" },
 				OnAction: func() {
@@ -151,7 +151,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				},
 			})
 			newRows = append(newRows, configRow{
-				Label:         "     →  Check kết nối nguồn",
+				Label:         "     →  Check source connection",
 				IsAction:      true,
 				IsCheckStatus: true,
 				StatusColor:   func() tcell.Color { return statusColor(sourceCheck) },
@@ -168,7 +168,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				},
 			})
 			newRows = append(newRows, configRow{
-				Label:    "     →  Đổi nguồn dữ liệu",
+				Label:    "     →  Change data source",
 				IsAction: true,
 				Get:      func() string { return "" },
 				OnAction: func() {
@@ -182,17 +182,17 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 					sourceCheck.errMsg = ""
 					persist()
 					rebuildTable()
-					statusView.SetText("[yellow]Đã bỏ chọn nguồn dữ liệu[-]")
+					statusView.SetText("[yellow]Data source deselected[-]")
 				},
 			})
 		}
 
-		// --- Đích đến (Destinations / Sinks) ---
+		// --- Destinations (Sinks) ---
 		for i := range cfg.Consumers.List {
 			idx := i
 			label := fmt.Sprintf("Destination URL %d (%s)", idx+1, cfg.Consumers.List[idx].Type)
-			deleteLabel := fmt.Sprintf("     →  Xoá đích đến %d", idx+1)
-			checkLabel := fmt.Sprintf("     →  Check kết nối đích %d", idx+1)
+			deleteLabel := fmt.Sprintf("     →  Delete destination %d", idx+1)
+			checkLabel := fmt.Sprintf("     →  Check destination connection %d", idx+1)
 
 			newRows = append(newRows, configRow{
 				Label: label,
@@ -234,13 +234,13 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 					consumerChecks = append(consumerChecks[:idx], consumerChecks[idx+1:]...)
 					persist()
 					rebuildTable()
-					statusView.SetText(fmt.Sprintf("[yellow]Đã xoá đích đến %d[-]", idx+1))
+					statusView.SetText(fmt.Sprintf("[yellow]Destination %d deleted[-]", idx+1))
 				},
 			})
 		}
 
 		newRows = append(newRows, configRow{
-			Label:    "     →  Thêm đích đến mới",
+			Label:    "     →  Add new destination",
 			IsAction: true,
 			Get:      func() string { return "" },
 			OnAction: func() {
@@ -251,10 +251,10 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			},
 		})
 
-		// --- Performance tuning (8 biến, tất cả đều chỉnh được qua TUI) ---
-		// Xem TuningConfig / AutoTuner: những biến này chỉ thực sự bị
-		// AutoTuner ghi đè khi chế độ đang là "automatic" (nút Manual/
-		// Automatic ở buttonBar bên dưới bảng).
+		// --- Performance tuning (8 variables, all editable from the TUI) ---
+		// See TuningConfig / AutoTuner: these variables are only actually
+		// overwritten by AutoTuner when the mode is "automatic" (Manual/
+		// Automatic button in the buttonBar below the table).
 		newRows = append(newRows,
 			configRow{
 				Label: "Worker Count",
@@ -262,7 +262,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 32)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Worker Count phải là số nguyên dương")
+						return fmt.Errorf("Worker Count must be a positive integer")
 					}
 					return nil
 				},
@@ -277,7 +277,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 64)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Batch Size phải là số nguyên dương")
+						return fmt.Errorf("Batch Size must be a positive integer")
 					}
 					return nil
 				},
@@ -292,7 +292,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 64)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Batch Timeout phải là số nguyên dương")
+						return fmt.Errorf("Batch Timeout must be a positive integer")
 					}
 					return nil
 				},
@@ -307,7 +307,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 64)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Flush Timeout phải là số nguyên dương")
+						return fmt.Errorf("Flush Timeout must be a positive integer")
 					}
 					return nil
 				},
@@ -322,7 +322,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 64)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Bag Max Size phải là số nguyên dương")
+						return fmt.Errorf("Bag Max Size must be a positive integer")
 					}
 					return nil
 				},
@@ -337,7 +337,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 32)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Bag Max Multiple phải là số nguyên dương")
+						return fmt.Errorf("Bag Max Multiple must be a positive integer")
 					}
 					return nil
 				},
@@ -352,7 +352,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 32)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Feedback Interval phải là số nguyên dương")
+						return fmt.Errorf("Feedback Interval must be a positive integer")
 					}
 					return nil
 				},
@@ -367,7 +367,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				Validate: func(v string) error {
 					n, err := strconv.ParseInt(v, 10, 32)
 					if err != nil || n <= 0 {
-						return fmt.Errorf("Pipeline Max Size phải là số nguyên dương")
+						return fmt.Errorf("Pipeline Max Size must be a positive integer")
 					}
 					return nil
 				},
@@ -415,15 +415,15 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	copySelected := func() {
 		row, _ := table.GetSelection()
 		if row < 0 || row >= len(rows) || rows[row].IsAction {
-			statusView.SetText("[yellow]Dòng này không có giá trị để copy[-]")
+			statusView.SetText("[yellow]This row has no value to copy[-]")
 			return
 		}
 		val := rows[row].Get()
 		if err := clipboard.WriteAll(val); err != nil {
-			statusView.SetText(fmt.Sprintf("[red]Copy thất bại: %v[-]", err))
+			statusView.SetText(fmt.Sprintf("[red]Copy failed: %v[-]", err))
 			return
 		}
-		statusView.SetText(fmt.Sprintf("[green]Đã copy: %s[-]", rows[row].Label))
+		statusView.SetText(fmt.Sprintf("[green]Copied: %s[-]", rows[row].Label))
 	}
 
 	rootPages := tview.NewPages()
@@ -470,7 +470,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 		box := tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(input, 1, 0, true)
-		box.SetBorder(true).SetTitle(" Sửa giá trị — Enter: lưu, Esc: huỷ ")
+		box.SetBorder(true).SetTitle(" Edit value — Enter: save, Esc: cancel ")
 
 		overlay := tview.NewFlex().
 			AddItem(nil, 0, 1, false).
@@ -484,13 +484,13 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		tuiApp.SetFocus(input)
 	}
 
-	// showAddSourceTypeDropdown hiển thị dropdown liệt kê các driver Source đã
-	// đăng ký (capture.ListRegistered()). Sau khi chọn, set Provider.Source.Type
-	// và điền URL từ Metadata.URLTemplate, rồi mở luôn dòng URL đó để sửa.
+	// showAddSourceTypeDropdown displays a dropdown listing the registered Source
+	// drivers (capture.ListRegistered()). After selection, it sets Provider.Source.Type
+	// and fills in the URL from Metadata.URLTemplate, then opens that URL row for editing.
 	showAddSourceTypeDropdown = func() {
 		driverList := capture.ListRegistered()
 		if len(driverList) == 0 {
-			statusView.SetText("[red]Không có driver Source nào được đăng ký (kiểm tra internal/drivers/drivers.go)[-]")
+			statusView.SetText("[red]No Source driver registered (check internal/drivers/drivers.go)[-]")
 			return
 		}
 
@@ -505,7 +505,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		}
 
 		dropdown := tview.NewDropDown().
-			SetLabel("Chọn loại nguồn dữ liệu: ").
+			SetLabel("Choose data source type: ").
 			SetOptions(options, func(text string, index int) {
 				if index < 0 || index >= len(driverList) {
 					closeDropdown()
@@ -523,7 +523,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 				closeDropdown()
 				rebuildTable()
-				// Dòng URL của source luôn là row 0 sau khi chọn.
+				// The source's URL row is always row 0 after selection.
 				table.Select(0, 0)
 				startEdit(0)
 			})
@@ -536,7 +536,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 		box := tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(dropdown, 1, 0, true)
-		box.SetBorder(true).SetTitle(" Chọn loại Source — Enter: chọn, Esc: huỷ ")
+		box.SetBorder(true).SetTitle(" Choose Source type — Enter: select, Esc: cancel ")
 
 		overlay := tview.NewFlex().
 			AddItem(nil, 0, 1, false).
@@ -556,7 +556,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	showAddSinkTypeDropdown = func() {
 		driverList := sinks.ListRegistered()
 		if len(driverList) == 0 {
-			statusView.SetText("[red]Không có driver Sink nào được đăng ký (kiểm tra internal/drivers/drivers.go)[-]")
+			statusView.SetText("[red]No Sink driver registered (check internal/drivers/drivers.go)[-]")
 			return
 		}
 
@@ -571,7 +571,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		}
 
 		dropdown := tview.NewDropDown().
-			SetLabel("Chọn loại database đích: ").
+			SetLabel("Choose destination database type: ").
 			SetOptions(options, func(text string, index int) {
 				if index < 0 || index >= len(driverList) {
 					closeDropdown()
@@ -592,9 +592,9 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				closeDropdown()
 				rebuildTable()
 
-				// Mỗi destination chiếm 3 dòng (URL + Check + Xoá). Số dòng
-				// đứng trước phần Destinations tuỳ vào source đã chọn hay chưa
-				// (1 dòng nếu chưa, 3 dòng nếu đã chọn: URL + Check + Đổi).
+				// Each destination occupies 3 rows (URL + Check + Delete). The number of rows
+				// before the Destinations section depends on whether a source has been chosen
+				// (1 row if not, 3 rows if chosen: URL + Check + Change).
 				sourceRowCount := 1
 				if cfg.Provider.Source.Type != "" {
 					sourceRowCount = 3
@@ -613,7 +613,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 		box := tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(dropdown, 1, 0, true)
-		box.SetBorder(true).SetTitle(" Chọn loại Sink — Enter: chọn, Esc: huỷ ")
+		box.SetBorder(true).SetTitle(" Choose Sink type — Enter: select, Esc: cancel ")
 
 		overlay := tview.NewFlex().
 			AddItem(nil, 0, 1, false).
@@ -651,13 +651,14 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	rebuildTable()
 
 	buttonBar := tview.NewForm().SetButtonsAlign(tview.AlignLeft)
-	buttonBar.AddButton("Copy dòng đang chọn", copySelected)
+	buttonBar.AddButton("Copy selected row", copySelected)
 
-	// --- Chế độ AutoTuner: Manual / Automatic ---
-	// Manual  -> AutoTuner.Start() không được gọi khi Run CDC (xem cmd/cli/run.go);
-	//            các giá trị người dùng nhập ở bảng trên giữ nguyên suốt quá trình chạy.
-	// Automatic -> AutoTuner.Start() được gọi, các biến real-time-tunable có thể
-	//            bị AutoTuner ghi đè trong lúc CDC đang chạy.
+	// --- AutoTuner mode: Manual / Automatic ---
+	// Manual    -> AutoTuner.Start() is not called when running CDC (see cmd/cli/run.go);
+	//              the values entered by the user in the table above remain unchanged
+	//              for the entire run.
+	// Automatic -> AutoTuner.Start() is called, and the real-time-tunable variables
+	//              may be overwritten by AutoTuner while CDC is running.
 	var updateModeButtons func()
 
 	buttonBar.AddButton("Manual", func() {
@@ -667,7 +668,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		cfg.Tuning.Mode = "manual"
 		persist()
 		updateModeButtons()
-		statusView.SetText("[green]Chế độ: Manual — AutoTuner sẽ bị khoá khi chạy CDC[-]")
+		statusView.SetText("[green]Mode: Manual — AutoTuner will be locked while CDC runs[-]")
 	})
 	manualBtnIdx := buttonBar.GetButtonCount() - 1
 
@@ -678,7 +679,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		cfg.Tuning.Mode = "automatic"
 		persist()
 		updateModeButtons()
-		statusView.SetText("[green]Chế độ: Automatic — AutoTuner sẽ được kích hoạt khi chạy CDC[-]")
+		statusView.SetText("[green]Mode: Automatic — AutoTuner will be activated while CDC runs[-]")
 	})
 	autoBtnIdx := buttonBar.GetButtonCount() - 1
 
@@ -698,7 +699,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			}
 		}
 	}
-	// Khởi tạo label đúng theo giá trị đã load từ config (mặc định "manual").
+	// Initialize the label to match the value loaded from config (default "manual").
 	updateModeButtons()
 
 	running := false
@@ -708,9 +709,9 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			return
 		}
 
-		// Điều kiện 1: phải có 1 listener và ít nhất 1 sink đã cấu hình URL.
+		// Condition 1: there must be a listener and at least 1 sink with a configured URL.
 		if cfg.Provider.Source.Type == "" {
-			statusView.SetText("[red]Chưa chọn nguồn dữ liệu (source)[-]")
+			statusView.SetText("[red]No data source selected[-]")
 			return
 		}
 		activeCount := 0
@@ -720,18 +721,18 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			}
 		}
 		if activeCount == 0 {
-			statusView.SetText("[red]Cần ít nhất 1 đích đến (destination)[-]")
+			statusView.SetText("[red]At least 1 destination is required[-]")
 			return
 		}
 
-		// Điều kiện 2: tất cả sink và listener phải Check kết nối OK.
+		// Condition 2: all sinks and the listener must pass the connection Check.
 		if sourceCheck.status != "ok" {
-			statusView.SetText("[red]Nguồn dữ liệu chưa được Check kết nối thành công[-]")
+			statusView.SetText("[red]Data source connection has not been checked successfully[-]")
 			return
 		}
 		for i, c := range cfg.Consumers.List {
 			if c.IsActive && c.Type != "" && (i >= len(consumerChecks) || consumerChecks[i].status != "ok") {
-				statusView.SetText(fmt.Sprintf("[red]Đích đến %d (%s) chưa được Check kết nối thành công[-]", i+1, c.Name))
+				statusView.SetText(fmt.Sprintf("[red]Destination %d (%s) connection has not been checked successfully[-]", i+1, c.Name))
 				return
 			}
 		}
