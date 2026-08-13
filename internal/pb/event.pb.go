@@ -7,11 +7,12 @@
 package pb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -144,9 +145,9 @@ func (*Checkpoint_Lsn) isCheckpoint_Offset() {}
 
 type ChangeEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// source_type là tên định danh của driver nguồn (VD: "postgres", "mysql"...),
-	// khớp với DBConnection.Type trong config. Dùng string thay vì enum để driver mới
-	// (folder mới trong internal/capture/<ten>) không cần sửa lại file .proto này.
+	// source_type is the identifier name of the source driver (e.g., "postgres", "mysql"...),
+	// matching DBConnection.Type in the config. A string is used instead of an enum so that new drivers
+	// (new folders in internal/capture/<name>) do not require modifying this .proto file.
 	SourceType    string      `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
 	Action        Action      `protobuf:"varint,2,opt,name=action,proto3,enum=pb.Action" json:"action,omitempty"`
 	Schema        string      `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`

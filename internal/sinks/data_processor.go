@@ -15,17 +15,18 @@ import (
 
 // DataProcessor manages the entire data processing flow for a specific destination.
 type DataProcessor struct {
-	Name        string                      // Identifier for the Sink.
-	Config      *config.AppConfig           // Application configuration.
-	Builder     QueryBuilder                // Block for converting ChangeEvent to SQL.
-	Executor    DatabaseExecutor            // Block for executing SQL commands.
-	EventChan   chan *models.SharedEventBag // Channel for receiving packaged event bags.
-	stopChan    chan struct{}               // Signal channel to request a stop.
-	ctx         context.Context             // Main context of the processor, canceled on Stop().
-	cancel      context.CancelFunc          // Function to cancel the above context.
-	GlobalState *models.GlobalState         // Reference to the global state for reporting Checkpoints.
-	wg          sync.WaitGroup              // WaitGroup to wait for the worker to finish before shutting down.
-	isActive    atomic.Bool                 // Live/dead state of the Sink.
+	Name          string                      // Identifier for the Sink.
+	Config        *config.AppConfig           // Application configuration.
+	Builder       QueryBuilder                // Block for converting ChangeEvent to SQL.
+	Executor      DatabaseExecutor            // Block for executing SQL commands.
+	EventChan     chan *models.SharedEventBag // Channel for receiving packaged event bags.
+	stopChan      chan struct{}               // Signal channel to request a stop.
+	ctx           context.Context             // Main context of the processor, canceled on Stop().
+	cancel        context.CancelFunc          // Function to cancel the above context.
+	GlobalState   *models.GlobalState         // Reference to the global state for reporting Checkpoints.
+	wg            sync.WaitGroup              // WaitGroup to wait for the workerLoop to finish before shutting down.
+	isActive      atomic.Bool                 // Live/dead state of the Sink.
+	pendingEvents atomic.Int64
 }
 
 func NewDataProcessor(name string, cfg *config.AppConfig, builder QueryBuilder, executor DatabaseExecutor, globalState *models.GlobalState) *DataProcessor {
@@ -48,7 +49,7 @@ func NewDataProcessor(name string, cfg *config.AppConfig, builder QueryBuilder, 
 // WriteBatch is a method of the Pipeline interface. It is used in a
 // one-to-one scenario (1 producer -> 1 consumer). It will automatically package the event bag with
 // a reference count of 1 and send it to the processing channel.
-func (dp *DataProcessor) WriteBatch(events []*pb.ChangeEvent) error {
+func (dp *DataProcessor) WriteBatch(events []*pb.ChangeEvent) error { // Implements Pipeline interface
 	if len(events) > 0 {
 		// Automatically package with a reference count of 1, as this is the only consumer.
 		dp.WriteShared(models.NewSharedEventBag(events, 1))
@@ -58,8 +59,8 @@ func (dp *DataProcessor) WriteBatch(events []*pb.ChangeEvent) error {
 
 // WriteShared is the method called by MultiSink to send a packaged event bag
 // (with a reference counter) to the processing channel.
-func (dp *DataProcessor) WriteShared(bag *models.SharedEventBag) { // Implements Pipeline interface
-	// No need to check len, as MultiSink has already done it.
+func (dp *DataProcessor) WriteShared(bag *models.SharedEventBag) {
+	dp.pendingEvents.Add(int64(len(bag.Events)))
 	dp.EventChan <- bag
 }
 
@@ -89,6 +90,11 @@ func (dp *DataProcessor) IsActive() bool { // Implements Pipeline interface
 	return dp.isActive.Load()
 }
 
+func (dp *DataProcessor) PendingEvents() int64 {
+	return dp.pendingEvents.Load()
+}
+
+// workerLoop is the main goroutine that handles event processing, batching, and writing to the destination.
 // workerLoop is the main goroutine that handles event processing, batching, and writing to the destination.
 func (dp *DataProcessor) workerLoop() {
 	var currentQueries []string
@@ -97,69 +103,82 @@ func (dp *DataProcessor) workerLoop() {
 	defer dp.wg.Done()
 
 	// Track the largest Checkpoint in the batch to update GlobalState.
-	var CurrentLastCheckpoint uint64
+	var currentLastCheckpoint uint64
 
-	initialTimeout := dp.Config.Batch.BatchTimeout.Load()
-	ticker := time.NewTicker(time.Duration(initialTimeout) * time.Millisecond)
+	ticker := time.NewTicker(time.Duration(dp.Config.Batch.BatchTimeout.Load()) * time.Millisecond)
 	defer ticker.Stop()
 
-	// flush is an internal function to perform writing a batch of data to the destination DB.
-	flush := func(reason string) {
-		if len(currentQueries) == 0 {
-			// Still update the checkpoint if there is one, even if there are no SQL statements (e.g., only a dummy event).
-			if CurrentLastCheckpoint > 0 {
-				dp.GlobalState.UpdateCheckpoint(dp.Name, CurrentLastCheckpoint)
-				CurrentLastCheckpoint = 0
+	// flushExact flushes exactly the first 'n' elements and retains the remainder.
+	flushExact := func(n int64, reason string) {
+		if n <= 0 || int64(len(currentQueries)) < n {
+			// Vẫn cần cập nhật checkpoint nếu batch hoàn toàn rỗng nhưng có dummy events.
+			// Still need to update checkpoint if the batch is completely empty but has dummy events.
+			if len(currentQueries) == 0 && currentLastCheckpoint > 0 {
+				dp.GlobalState.UpdateCheckpoint(dp.Name, currentLastCheckpoint)
+				currentLastCheckpoint = 0
 			}
 			return
 		}
+
+		queries := currentQueries[:n]
+		args := currentArgs[:n]
+		// Only attach the checkpoint to the LAST flush containing the final event
+		// of the current buffer part — if there's a remainder after 'n', the checkpoint
+		// (corresponding to the last event of the bag) should not be committed yet because
+		// that remainder corresponds to events AFTER the held checkpoint, which will be sent
+		// in the next flush cycle.
+		remaining := int64(len(currentQueries)) - n
+		var ckpt uint64
+		if remaining == 0 {
+			ckpt = currentLastCheckpoint
+		}
+
 		slog.Info("Flushing batch to destination",
-			"sink", dp.Name,
-			"reason", reason,
-			"query_count", len(currentQueries),
-			"checkpoint_lsn", CurrentLastCheckpoint,
+			"sink", dp.Name, "reason", reason,
+			"query_count", len(queries), "checkpoint_lsn", ckpt,
 		)
-		// Use the processor's context (dp.ctx) so that if Stop() is called, this context will be canceled,
-		// helping to interrupt any running or waiting ExecuteBatch commands.
+
 		flushTimeout := time.Duration(dp.Config.Batch.FlushTimeoutMs.Load()) * time.Millisecond
 		execCtx, execCancel := context.WithTimeout(dp.ctx, flushTimeout)
-		defer execCancel()
-
 		err := utils.DoWithRetry(
 			dp.Config.Retry.MaxRetries,
 			time.Duration(dp.Config.Retry.BaseDelayMs)*time.Millisecond,
 			time.Duration(dp.Config.Retry.MaxDelayTimeMs)*time.Millisecond,
-			func() error {
-				return dp.Executor.ExecuteBatch(execCtx, currentQueries, currentArgs)
-			},
+			func() error { return dp.Executor.ExecuteBatch(execCtx, queries, args) },
 		)
+		execCancel()
+
 		if err != nil {
-			// Critical error, disconnect this sink to not affect other sinks.
 			slog.Error("Disconnecting sink due to critical error", "sink", dp.Name, "error", err)
 			dp.isActive.Store(false)
 			dp.GlobalState.RemoveSink(dp.Name)
 		} else {
-			// Write successful, update the checkpoint in GlobalState.
-			if CurrentLastCheckpoint > 0 {
-				dp.GlobalState.UpdateCheckpoint(dp.Name, CurrentLastCheckpoint)
+			if ckpt > 0 {
+				dp.GlobalState.UpdateCheckpoint(dp.Name, ckpt)
+				// Reset checkpoint only after it has actually been sent
+				currentLastCheckpoint = 0
+			}
+			if reason != "Shutdown" {
+				// Update the actual target, no longer rounded by bag size
+				nextTarget := dp.GlobalState.Probe.RecordFlush(n)
+				dp.Config.Batch.BatchMaxSize.Store(nextTarget)
 			}
 		}
 
-		// Reset the buffer for the next batch.
-		currentQueries = currentQueries[:0]
-		currentArgs = currentArgs[:0]
-		CurrentLastCheckpoint = 0
+		// Truncate the flushed portion, keep the remainder for the next cycle.
+		currentQueries = append(currentQueries[:0], currentQueries[n:]...)
+		currentArgs = append(currentArgs[:0], currentArgs[n:]...)
 	}
 
 	for {
 		select {
 		case <-dp.stopChan:
-			flush("Shutdown") // Before exiting, flush any remaining data.
+			// Flush all remaining buffered events on Shutdown
+			flushExact(int64(len(currentQueries)), "Shutdown")
 			return
 
 		case sharedBag := <-dp.EventChan:
-			// If the sink has been disabled, discard the event and call Done()
-			// to not block other sinks and to avoid memory leaks.
+			dp.pendingEvents.Add(-int64(len(sharedBag.Events)))
 			if !dp.isActive.Load() {
 				sharedBag.Done()
 				continue
@@ -170,13 +189,12 @@ func (dp *DataProcessor) workerLoop() {
 			activeMaxSize := dp.Config.Batch.BatchMaxSize.Load()
 			numWorkers := int(dp.Config.DataProcessing.DataProcessingWorkerCount.Load())
 
-			// Get the Checkpoint from the last event in the bag.
 			if len(eventsBuffer) > 0 {
 				lastEvent := eventsBuffer[len(eventsBuffer)-1]
-				LastCheckPoint := lastEvent.GetOffset().GetLsn()
+				lastCheckPoint := lastEvent.GetOffset().GetLsn()
 
-				if LastCheckPoint > CurrentLastCheckpoint {
-					CurrentLastCheckpoint = LastCheckPoint
+				if lastCheckPoint > currentLastCheckpoint {
+					currentLastCheckpoint = lastCheckPoint
 				}
 			}
 
@@ -185,7 +203,6 @@ func (dp *DataProcessor) workerLoop() {
 			workerArgs := make([][][]any, numWorkers)
 			chunkSize := (len(eventsBuffer) + numWorkers - 1) / numWorkers
 
-			// Divide the event bag into smaller chunks for parallel processing by workers (Fan-Out).
 			for w := 0; w < numWorkers; w++ {
 				wg.Add(1)
 				go func(workerID int) {
@@ -200,12 +217,10 @@ func (dp *DataProcessor) workerLoop() {
 					}
 					subChunk := eventsBuffer[wStart:wEnd]
 
-					// Reuse a slice from the pool to reduce memory allocation.
 					localQueries := models.QueryPool.Get().([]string)[:0]
 					localArgs := models.ArgsPool.Get().([][]any)[:0]
 
 					for _, e := range subChunk {
-						// Convert ChangeEvent to SQL statement.
 						q, a := dp.Builder.BuildQuery(e)
 
 						if q != "" {
@@ -220,26 +235,27 @@ func (dp *DataProcessor) workerLoop() {
 
 			wg.Wait()
 
-			// Aggregate the results (SQL queries) from the workers into the main buffer (Fan-In).
 			for i := 0; i < numWorkers; i++ {
 				currentQueries = append(currentQueries, workerQueries[i]...)
 				currentArgs = append(currentArgs, workerArgs[i]...)
 
-				// Return the used slices to the pool.
 				models.QueryPool.Put(workerQueries[i])
 				models.ArgsPool.Put(workerArgs[i])
 			}
+
+			// Handle buffer overflow with a loop, utilizing the new BatchMaxSize after each flushExact call
 			if int64(len(currentQueries)) >= activeMaxSize {
-				flush("Batch full")
 				ticker.Reset(time.Duration(dp.Config.Batch.BatchTimeout.Load()) * time.Millisecond)
 			}
-
-			// Notify the SharedEventBag that this sink has finished processing the event bag.
+			for int64(len(currentQueries)) >= dp.Config.Batch.BatchMaxSize.Load() {
+				n := dp.Config.Batch.BatchMaxSize.Load()
+				flushExact(n, "Batch full")
+			}
 			sharedBag.Done()
 
 		case <-ticker.C:
-			if dp.isActive.Load() {
-				flush("Timeout")
+			if dp.isActive.Load() { // Timeout will also flush all remaining buffered events
+				flushExact(int64(len(currentQueries)), "Timeout")
 			}
 			ticker.Reset(time.Duration(dp.Config.Batch.BatchTimeout.Load()) * time.Millisecond)
 		}

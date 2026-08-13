@@ -2,75 +2,170 @@ package tuning
 
 import (
 	"log/slog"
+	"runtime"
 	"time"
 
 	"my-cdc/internal/config"
 	"my-cdc/internal/models"
+	"my-cdc/internal/sinks"
+
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
-// AutoTuner is responsible for automatically adjusting system parameters based on performance metrics.
+const (
+	ramCeilingPercent    = 95.0
+	ramSafeResumePercent = 85.0
+
+	backlogHighWatermarkSec = 1.5
+	backlogLowWatermarkSec  = 0.1
+	minWorkers              = 1
+
+	minTimeoutMs int64 = 20
+	maxTimeoutMs int64 = 5_000
+)
+
+type ramState int
+
+const (
+	ramNormal ramState = iota
+	ramThrottled
+)
+
+// AutoTuner now has only 3 responsibilities, each using its specific signal:
+//
+//  1. RAM guard (gopsutil) -> signals FlushProbe to back off, immediately cutting BatchMaxSize
+//     if an emergency ceiling is exceeded.
+//  2. Actual backlog (events waiting in EventChan, measured by event count, not bag count) -> Worker Count.
+//  3. Smoothed EPS + CONVERGED batch (not the currently probing batch) from
+//     FlushProbe -> Batch Timeout.
+//
+// The Batch Size PROBING is no longer here — it runs real-time within
+// FlushProbe.RecordFlush (models/flush_probe.go), called by DataProcessor
+// on each flush instead of waiting for AutoTuner's 10s tick.
 type AutoTuner struct {
-	Config *config.AppConfig
-	Counts *models.EventsCount
+	// Configuration and state references
+	Config      *config.AppConfig
+	Counts      *models.EventsCount
+	GlobalState *models.GlobalState
+	Pipeline    sinks.Pipeline
+
+	ramState ramState
 }
 
-// NewAutoTuner creates a new instance of AutoTuner.
-func NewAutoTuner(cfg *config.AppConfig, counts *models.EventsCount) *AutoTuner {
+func NewAutoTuner(cfg *config.AppConfig, counts *models.EventsCount, state *models.GlobalState, pipeline sinks.Pipeline) *AutoTuner {
 	return &AutoTuner{
-		Config: cfg,
-		Counts: counts,
+		Config:      cfg,
+		Counts:      counts,
+		GlobalState: state,
+		Pipeline:    pipeline,
+		ramState:    ramNormal,
 	}
 }
 
-// Start launches the auto-tuning process in a separate goroutine.
 func (at *AutoTuner) Start() {
 	slog.Info("AUTO-TUNER: Starting...")
 	go at.runLoop()
 }
 
-// runLoop is the main loop that periodically checks metrics and adjusts the configuration.
 func (at *AutoTuner) runLoop() {
-	// The tuning interval should be longer than the monitoring interval
-	// to avoid overly frequent adjustments.
 	interval := time.Duration(at.Config.Monitor.MonitorIntervalSec*2) * time.Second
 	if interval <= 0 {
-		interval = 10 * time.Second // Fallback value
+		interval = 10 * time.Second
 	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var lastInsert, lastUpdate, lastDelete int64
-
 	for range ticker.C {
-		// Calculate the current Events Per Second (EPS).
-		currentInsert := at.Counts.InsertCount.Load()
-		currentUpdate := at.Counts.UpdateCount.Load()
-		currentDelete := at.Counts.DeleteCount.Load()
+		at.checkRAMGuard()
+		at.tuneWorkerCount()
+		at.tuneTimeout()
 
-		totalDelta := (currentInsert - lastInsert) + (currentUpdate - lastUpdate) + (currentDelete - lastDelete)
-		eps := float64(totalDelta) / interval.Seconds()
-
-		lastInsert = currentInsert
-		lastUpdate = currentUpdate
-		lastDelete = currentDelete
-
-		// Apply the tuning logic based on the calculated EPS.
-		at.applyTuningLogic(eps)
+		slog.Info("AUTO-TUNER",
+			"ram_state", at.ramStateLabel(),
+			"pending_events", at.Pipeline.PendingEvents(),
+			"workers", at.Config.DataProcessing.DataProcessingWorkerCount.Load(),
+			"batch_size", at.Config.Batch.BatchMaxSize.Load(), // updated by FlushProbe in real-time, read here for logging only
+			"batch_timeout_ms", at.Config.Batch.BatchTimeout.Load(),
+			"smoothed_eps", at.GlobalState.Probe.SmoothedEPS(),
+		)
 	}
 }
 
-// applyTuningLogic contains the logic for adjusting system parameters.
-// It takes the current EPS and decides what actions to take.
-// NOTE: This is currently a placeholder for more sophisticated logic.
-func (at *AutoTuner) applyTuningLogic(eps float64) {
-	// The idea is that this function will calculate new optimal values
-	// and then apply them using atomic Store methods on the config.
-	highTrafficThreshold := 10000.0 // This threshold should also be configurable.
-
-	if eps > highTrafficThreshold {
-		slog.Info("AUTO-TUNER: High traffic detected", "eps", eps, "action", "using high-traffic configuration (placeholder)")
-	} else {
-		slog.Info("AUTO-TUNER: Normal traffic detected", "eps", eps, "action", "using standard configuration (placeholder)")
+func (at *AutoTuner) checkRAMGuard() {
+	v, err := mem.VirtualMemory()
+	if err != nil {
+		slog.Warn("AUTO-TUNER: Failed to read system RAM, skipping RAM guard tick", "error", err)
+		return
 	}
+
+	switch at.ramState {
+	case ramNormal:
+		if v.UsedPercent >= ramCeilingPercent {
+			at.ramState = ramThrottled
+			at.GlobalState.Probe.SetRAMThrottled(true)
+			cur := at.Config.Batch.BatchMaxSize.Load()
+			next := cur / 2
+			if next < models.SafeMinBatch {
+				next = models.SafeMinBatch
+			}
+			at.Config.Batch.BatchMaxSize.Store(next)
+			slog.Warn("AUTO-TUNER: RAM ceiling reached, immediately cutting batch size",
+				"ram_used_percent", v.UsedPercent, "batch_size_before", cur, "batch_size_after", next)
+		}
+	case ramThrottled:
+		if v.UsedPercent < ramSafeResumePercent {
+			at.ramState = ramNormal
+			at.GlobalState.Probe.SetRAMThrottled(false)
+			slog.Info("AUTO-TUNER: RAM is below safe threshold, allowing FlushProbe to increase batch again",
+				"ram_used_percent", v.UsedPercent)
+		}
+	}
+}
+
+func (at *AutoTuner) ramStateLabel() string {
+	if at.ramState == ramThrottled {
+		return "throttled"
+	}
+	return "normal"
+}
+
+func (at *AutoTuner) tuneWorkerCount() {
+	pending := at.Pipeline.PendingEvents()
+	eps := at.GlobalState.Probe.SmoothedEPS()
+	backlogSec := float64(pending) / max(eps, 1)
+
+	workers := at.Config.DataProcessing.DataProcessingWorkerCount.Load()
+	switch {
+	case backlogSec > backlogHighWatermarkSec && int(workers) < runtime.NumCPU():
+		at.Config.DataProcessing.DataProcessingWorkerCount.Store(workers + 1)
+		slog.Info("AUTO-TUNER: Backlog exceeded threshold, increasing worker count",
+			"backlog_sec", backlogSec, "pending_events", pending, "workers", workers+1)
+
+	case backlogSec < backlogLowWatermarkSec && workers > minWorkers:
+		at.Config.DataProcessing.DataProcessingWorkerCount.Store(workers - 1)
+		slog.Info("AUTO-TUNER: Backlog low, decreasing worker count",
+			"backlog_sec", backlogSec, "workers", workers-1)
+	}
+}
+
+// tuneTimeout DELIBERATELY does not read the current BatchMaxSize (which fluctuates
+// continuously because FlushProbe is probing), but instead uses StableBatch() (the CONVERGED estimate)
+// along with SmoothedEPS() (instead of instantaneous EPS) — separating these two quantities from
+// the batch probing loop, solving the "alternating large/small batch" problem encountered previously.
+func (at *AutoTuner) tuneTimeout() {
+	eps := at.GlobalState.Probe.SmoothedEPS()
+	b, ok := at.GlobalState.Probe.StableBatch()
+	if !ok || eps <= 0 {
+		return // not enough stable data, keep current timeout instead of guessing
+	}
+
+	timeoutMs := int64(float64(b) / eps * 1000.0)
+	if timeoutMs < minTimeoutMs {
+		timeoutMs = minTimeoutMs
+	}
+	if timeoutMs > maxTimeoutMs {
+		timeoutMs = maxTimeoutMs
+	}
+	at.Config.Batch.BatchTimeout.Store(timeoutMs)
 }

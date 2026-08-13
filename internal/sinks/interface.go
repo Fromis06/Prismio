@@ -25,9 +25,10 @@ type DatabaseExecutor interface {
 // Pipeline represents a complete data processing flow for a target database.
 // It includes receiving data, processing it, and writing it to the destination.
 type Pipeline interface {
-	Start() error                              // Starts the pipeline (e.g., launches worker goroutines).
-	WriteBatch(events []*pb.ChangeEvent) error // Receives a "bag" of events (for 1-to-1 scenarios).
-	WriteShared(bag *models.SharedEventBag)    // Receives a shared event bag (for 1-to-many scenarios).
-	Stop() error                               // Stops the pipeline gracefully.
-	IsActive() bool                            // Checks if the pipeline is still active.
+	Start() error
+	WriteBatch(events []*pb.ChangeEvent) error
+	WriteShared(bag *models.SharedEventBag)
+	Stop() error
+	IsActive() bool
+	PendingEvents() int64
 }

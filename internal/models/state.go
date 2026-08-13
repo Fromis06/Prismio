@@ -3,16 +3,29 @@ package models
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+type FlushSample struct {
+	BatchSize int64
+	Duration  time.Duration
+	Reason    string
+	At        time.Time
+}
 
 // [Pattern: Thread-Safe State] GlobalState safely manages independent checkpoints for each Sink.
 type GlobalState struct {
-	checkpoints sync.Map // Key: Sink Name (string), Value: LSN (*atomic.Uint64).
+	checkpoints sync.Map
+	Probe       *FlushProbe // Replaces old flushMu/flushBuf/... fields
 }
 
 // NewGlobalState initializes a new GlobalState.
+const defaultFlushHistoryCap = 500
+
 func NewGlobalState() *GlobalState {
-	return &GlobalState{}
+	return &GlobalState{ // Starts from the lowest level, then climbs up automatically
+		Probe: NewFlushProbe(SafeMinBatch, SafeMaxBatch, SafeMinBatch),
+	}
 }
 
 // InitSink initializes the initial checkpoint for a specific Sink.

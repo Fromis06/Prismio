@@ -116,7 +116,7 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 		return nil, fmt.Errorf("error initializing source: %w", err)
 	}
 
-	autoTuner := tuning.NewAutoTuner(cfg, eventsCount)
+	autoTuner := tuning.NewAutoTuner(cfg, eventsCount, globalState, multiSink)
 
 	return &Application{
 		Config:      cfg,

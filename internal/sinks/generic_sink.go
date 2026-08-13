@@ -21,6 +21,21 @@ func (m *MultiSink) AddPipeline(p Pipeline) {
 	m.pipelines = append(m.pipelines, p)
 }
 
+// PendingEvents returns the HIGHEST backpressure level among active child pipelines.
+// The system is only as fast as its slowest sink.
+func (m *MultiSink) PendingEvents() int64 {
+	var maxPending int64
+	for _, p := range m.pipelines {
+		if !p.IsActive() {
+			continue
+		}
+		if pe := p.PendingEvents(); pe > maxPending {
+			maxPending = pe
+		}
+	}
+	return maxPending
+}
+
 // Start starts all child pipelines.
 func (m *MultiSink) Start() error {
 	for _, p := range m.pipelines {
