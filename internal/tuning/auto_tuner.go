@@ -33,8 +33,14 @@ const (
 
 // AutoTuner now has only 3 responsibilities, each using its specific signal:
 //
-//  1. RAM guard (gopsutil) -> signals FlushProbe to back off, immediately cutting BatchMaxSize
-//     if an emergency ceiling is exceeded.
+//  1. RAM guard (gopsutil) -> signals GlobalState.SetRAMThrottled, pausing the
+//     Listener from pulling new WAL data from the source (see
+//     internal/capture/postgres/listener.go) until RAM drops back to a safe
+//     level. Deliberately does NOT touch BatchMaxSize anymore: cutting batch
+//     size only hurts flush throughput (especially over high-RTT links to
+//     the sink) without addressing the actual cause of RAM growth (ingest
+//     rate outpacing flush rate) — over high RTT it made backlog/RAM grow
+//     even faster, which is what this replaces.
 //  2. Actual backlog (events waiting in EventChan, measured by event count, not bag count) -> Worker Count.
 //  3. Smoothed EPS + CONVERGED batch (not the currently probing batch) from
 //     FlushProbe -> Batch Timeout.
@@ -92,6 +98,12 @@ func (at *AutoTuner) runLoop() {
 	}
 }
 
+// checkRAMGuard implements RAM backpressure at the INPUT side instead of
+// cutting BatchMaxSize at the output side (see the AutoTuner doc-comment and
+// GlobalState.SetRAMThrottled for the full rationale). When RAM crosses the
+// ceiling, the Listener is signaled to pause pulling new WAL data; when it
+// drops back below the (lower, hysteresis) resume threshold, the Listener
+// resumes. Flush batch size / throughput at the sink is never touched here.
 func (at *AutoTuner) checkRAMGuard() {
 	v, err := mem.VirtualMemory()
 	if err != nil {
@@ -103,42 +115,24 @@ func (at *AutoTuner) checkRAMGuard() {
 	case ramNormal:
 		if v.UsedPercent >= ramCeilingPercent {
 			at.ramState = ramThrottled
-			at.GlobalState.Probe.SetRAMThrottled(true) // đóng băng probe NGAY — mọi lần flush tiếp theo sẽ không tự giảm thêm nữa
-			at.haltBatch(v.UsedPercent, "Chạm trần RAM lần đầu, cắt batch size ngay lập tức")
+			at.GlobalState.SetRAMThrottled(true)
+			slog.Warn("AUTO-TUNER: Chạm trần RAM, tạm dừng nạp dữ liệu mới từ nguồn (Listener) cho tới khi RAM về ngưỡng an toàn — batch size và tốc độ xả sink KHÔNG bị ảnh hưởng",
+				"ram_used_percent", v.UsedPercent)
 		}
 
 	case ramThrottled:
 		if v.UsedPercent < ramSafeResumePercent {
 			at.ramState = ramNormal
-			at.GlobalState.Probe.SetRAMThrottled(false)
-			slog.Info("AUTO-TUNER: RAM đã về dưới ngưỡng an toàn, cho phép FlushProbe hoạt động trở lại",
+			at.GlobalState.SetRAMThrottled(false)
+			slog.Info("AUTO-TUNER: RAM đã về dưới ngưỡng an toàn, cho phép Listener tiếp tục nạp dữ liệu từ nguồn",
 				"ram_used_percent", v.UsedPercent)
-		} else if v.UsedPercent >= ramCeilingPercent {
-			// Vẫn còn trên trần sau ÍT NHẤT MỘT CHU KỲ TICK (~10s) kể từ
-			// lần cắt trước — đủ thời gian để backlog có cơ hội xả bớt
-			// trước khi cắt thêm. Đây là điểm khác biệt cốt lõi so với
-			// trước: cắt tối đa 1 lần MỖI TICK AUTOTUNER, không phải mỗi
-			// lần flush (có thể xảy ra hàng chục/hàng trăm lần trong cùng
-			// khoảng thời gian đó) — chính là nguyên nhân vòng xoáy tụt
-			// batch đã quan sát.
-			at.haltBatch(v.UsedPercent, "Vẫn trên trần RAM sau 1 chu kỳ, cắt thêm")
 		}
+		// Vẫn trên trần: giữ nguyên trạng thái throttled, không cần làm gì
+		// thêm mỗi tick — Listener đã tự dừng nạp (xem waitForRAMRecovery
+		// trong internal/capture/postgres/listener.go). Backlog sẽ tự vơi
+		// dần vì các sink vẫn tiếp tục xả với BatchMaxSize/throughput
+		// nguyên vẹn, không bị cắt giảm như cơ chế cũ.
 	}
-}
-
-// haltBatch cắt nửa batch size hiện tại, chặn ở RAMEmergencyMinBatch (cao
-// hơn sàn dò thường của probe) để tránh rơi vào vùng chi phí cố định mỗi
-// lần flush chiếm ưu thế — làm throughput sụp thêm thay vì phục hồi.
-func (at *AutoTuner) haltBatch(ramPercent float64, note string) {
-	cur := at.Config.Batch.BatchMaxSize.Load()
-	next := cur / 2
-	if next < models.RAMEmergencyMinBatch {
-		next = models.RAMEmergencyMinBatch
-	}
-	at.Config.Batch.BatchMaxSize.Store(next)
-	at.GlobalState.Probe.ForceSet(next) // đồng bộ lại probe theo giá trị vừa ép — probe không "cãi lại" ở lần flush kế tiếp
-	slog.Warn("AUTO-TUNER: "+note,
-		"ram_used_percent", ramPercent, "batch_size_before", cur, "batch_size_after", next)
 }
 
 func (at *AutoTuner) ramStateLabel() string {

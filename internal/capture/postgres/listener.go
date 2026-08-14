@@ -172,10 +172,54 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					if err != nil {
 						continue
 					}
+
+					// Backpressure: if RAM pressure is high (AutoTuner's RAM
+					// guard, see internal/tuning/auto_tuner.go), pause here
+					// instead of pushing more data into the pipeline. This
+					// stalls the read loop, so we stop calling
+					// conn.ReceiveMessage — TCP flow control then holds
+					// data back at Postgres itself, instead of it piling up
+					// as unbounded backlog on our side. Unlike the old
+					// approach (cutting BatchMaxSize), this never touches
+					// flush throughput at the sink.
+					if l.waitForRAMRecovery(ctx, globalState) {
+						return nil // ctx canceled while waiting
+					}
+
 					currentLSN := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 					l.Processor.ProcessRawBytes(xld.WALData, currentLSN)
 				}
 			}
 		}
 	}
+}
+
+// waitForRAMRecovery blocks while the system is under RAM pressure (see
+// AutoTuner's RAM guard / GlobalState.SetRAMThrottled), polling every
+// 200ms. Returns true if ctx was canceled while waiting (caller should
+// stop), false once it's safe to continue.
+//
+// KNOWN LIMITATION: while paused here, we also stop sending
+// StandbyStatusUpdate feedback (normally sent from the ticker case in the
+// outer select loop above), since we're blocked inside this same loop
+// iteration. If the pause outlasts Postgres's replication timeout, the
+// server may drop the connection. Acceptable for now since RAM pressure is
+// expected to be transient (draining an existing backlog, not a permanently
+// under-provisioned sink); if long pauses turn out to be common in
+// practice, move status-update sending to its own goroutine/ticker
+// independent of this loop instead of patching around it here.
+func (l *Listener) waitForRAMRecovery(ctx context.Context, globalState *models.GlobalState) bool {
+	if !globalState.IsRAMThrottled() {
+		return false
+	}
+	slog.Warn("CAPTURE: RAM pressure detected, pausing WAL intake until it recovers")
+	for globalState.IsRAMThrottled() {
+		select {
+		case <-ctx.Done():
+			return true
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	slog.Info("CAPTURE: RAM recovered, resuming WAL intake")
+	return false
 }

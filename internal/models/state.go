@@ -17,6 +17,27 @@ type FlushSample struct {
 type GlobalState struct {
 	checkpoints sync.Map
 	Probe       *FlushProbe // Replaces old flushMu/flushBuf/... fields
+
+	// ramThrottled is set by AutoTuner's RAM guard and read by the Listener
+	// to pause pulling new WAL data from the source when RAM pressure is
+	// high. See SetRAMThrottled/IsRAMThrottled below.
+	//
+	// This REPLACES the old approach of cutting BatchMaxSize / freezing
+	// FlushProbe when RAM hit its ceiling. Cutting batch size only tunes
+	// flush THROUGHPUT at the sink — it does nothing about the actual cause
+	// of RAM growth (WAL ingest rate outpacing flush rate), and over
+	// high-RTT links to the sink it actively makes things worse: fewer
+	// events per round-trip means lower throughput, which widens the
+	// ingest/flush gap and grows the backlog (and RAM) faster, not slower.
+	//
+	// Backpressure now happens at the INPUT side instead: the Listener
+	// stops reading further WAL data while ramThrottled is true (see
+	// waitForRAMRecovery in internal/capture/postgres/listener.go). This
+	// leaves flush batches (and therefore flush throughput) untouched, and
+	// relies on Postgres's own replication flow control / TCP backpressure
+	// to hold data back at the source until this app's backlog drains and
+	// RAM recovers.
+	ramThrottled atomic.Bool
 }
 
 // NewGlobalState initializes a new GlobalState.
@@ -87,4 +108,20 @@ func (g *GlobalState) ActiveSinks() []string {
 		return true
 	})
 	return sinks
+}
+
+// SetRAMThrottled is called by AutoTuner's RAM guard (internal/tuning/auto_tuner.go)
+// to signal system-wide backpressure. See the doc-comment on the
+// ramThrottled field for why this throttles the INPUT side (Listener)
+// instead of cutting BatchMaxSize on the OUTPUT side.
+func (g *GlobalState) SetRAMThrottled(v bool) {
+	g.ramThrottled.Store(v)
+}
+
+// IsRAMThrottled reports whether the system is currently under RAM pressure.
+// Polled by the Listener's read loop (see waitForRAMRecovery in
+// internal/capture/postgres/listener.go) to decide whether to pause pulling
+// more WAL data from the source.
+func (g *GlobalState) IsRAMThrottled() bool {
+	return g.ramThrottled.Load()
 }

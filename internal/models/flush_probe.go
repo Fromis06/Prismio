@@ -3,11 +3,10 @@ package models
 import (
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-// FlushProbe dò Batch Size tối ưu bằng Perturb & Observe (P&O), với 3 loại
+// FlushProbe dò Batch Size tối ưu bằng Perturb & Observe (P&O), với 2 loại
 // tín hiệu được xử lý HOÀN TOÀN TÁCH BIỆT, không cộng dồn lên nhau:
 //
 //  1. "Batch full" (RecordFullFlush) -> P&O bình thường: đây là tín hiệu
@@ -17,11 +16,17 @@ import (
 //     chưa đủ phần lớn target — nếu lấp gần đầy (>timeoutNearFullRatio) thì
 //     coi là nhiễu định thời trong lúc traffic vẫn cao, bỏ qua để tránh
 //     giật cục giữa spike.
-//  3. RAM khẩn cấp (ForceSet, gọi từ AutoTuner) -> ghi đè trực tiếp, và
-//     trong lúc `ramThrottled==true`, CẢ (1) VÀ (2) ĐỀU BỊ ĐÓNG BĂNG hoàn
-//     toàn — không tự ý giảm thêm ở mỗi lần flush — để RAM guard (tick theo
-//     chu kỳ AutoTuner, chậm hơn nhiều so với tần suất flush) là nơi DUY
-//     NHẤT quyết định trong tình huống khẩn cấp, tránh cộng dồn cắt giảm.
+//
+// LƯU Ý: FlushProbe KHÔNG còn xử lý áp lực RAM. Trước đây RAM guard
+// (AutoTuner) ép cắt BatchMaxSize qua ForceSet + đóng băng P&O qua
+// SetRAMThrottled — nhưng cắt batch chỉ tối ưu THROUGHPUT của sink, không
+// giải quyết nguyên nhân RAM tăng (tốc độ nạp từ WAL > tốc độ xả), và ở môi
+// trường có RTT cao tới sink, cắt batch còn LÀM TỆ HƠN (throughput giảm ->
+// backlog phình to nhanh hơn, đúng vòng xoáy đã quan sát trong thực tế).
+// RAM guard giờ tác động ở phía INPUT (Listener tạm dừng đọc thêm WAL) thay
+// vì OUTPUT (batch size) — xem GlobalState.SetRAMThrottled trong
+// internal/models/state.go và waitForRAMRecovery trong
+// internal/capture/postgres/listener.go.
 type FlushProbe struct {
 	mu sync.Mutex
 
@@ -44,7 +49,6 @@ type FlushProbe struct {
 	haveStable  bool
 	smoothedEPS float64
 
-	ramThrottled       atomic.Bool
 	minBatch, maxBatch int64
 }
 
@@ -76,14 +80,6 @@ const (
 
 	SafeMinBatch int64 = 200
 	SafeMaxBatch int64 = 100_000
-
-	// RAMEmergencyMinBatch là sàn RIÊNG cho tình huống RAM khẩn cấp, cao
-	// hơn SafeMinBatch — cắt tới 200 khi đang cần xả backlog gấp có thể
-	// khiến chi phí cố định mỗi lần flush (network RTT, overhead pgx.Batch)
-	// chiếm ưu thế, làm throughput sụp thêm thay vì phục hồi (đúng vòng
-	// xoáy đã quan sát). Con số này nên tinh chỉnh lại theo C0 đo thực tế
-	// trên hệ thống của bạn nếu có điều kiện.
-	RAMEmergencyMinBatch int64 = 2000
 )
 
 func NewFlushProbe(minBatch, maxBatch, initialBatch int64) *FlushProbe {
@@ -99,32 +95,13 @@ func NewFlushProbe(minBatch, maxBatch, initialBatch int64) *FlushProbe {
 	}
 }
 
-func (p *FlushProbe) SetRAMThrottled(v bool) {
-	p.ramThrottled.Store(v)
-}
-
-// ForceSet ép current/stableBatch về một giá trị cụ thể do BÊN NGOÀI quyết
-// định (RAM guard) — probe không "cãi lại" ở lần flush kế tiếp, mà coi đây
-// là điểm xuất phát mới, dò lại nhẹ nhàng (step co về mức nhỏ nhất) từ đó.
-func (p *FlushProbe) ForceSet(v int64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.current = clamp64(v, p.minBatch, p.maxBatch)
-	p.stableBatch = p.current
-	p.haveStable = true
-	p.step = probeMinStep
-}
-
 // RecordFullFlush: batch đã lấp đầy đúng target -> tín hiệu THẬT, đưa vào
-// P&O bình thường. Đóng băng hoàn toàn nếu đang ramThrottled.
+// P&O bình thường.
 func (p *FlushProbe) RecordFullFlush(n int64) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	eps := p.updateEPSLocked(n)
-	if p.ramThrottled.Load() {
-		return p.current
-	}
 	if eps > 0 {
 		p.observe(eps, n)
 	}
@@ -133,16 +110,12 @@ func (p *FlushProbe) RecordFullFlush(n int64) int64 {
 
 // RecordTimeoutFlush: batch KHÔNG lấp đầy trong thời gian chờ cho phép.
 // Phân biệt "traffic giảm thật" (decay tỉ lệ) với "nhiễu định thời giữa
-// spike" (bỏ qua) bằng fillRatio so với target. Đóng băng hoàn toàn nếu
-// đang ramThrottled — lý do xem doc-comment của struct.
+// spike" (bỏ qua) bằng fillRatio so với target.
 func (p *FlushProbe) RecordTimeoutFlush(n int64) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.updateEPSLocked(n)
-	if p.ramThrottled.Load() {
-		return p.current
-	}
 	if p.current <= 0 {
 		return p.current
 	}
@@ -194,9 +167,7 @@ func (p *FlushProbe) updateEPSLocked(n int64) float64 {
 	return eps
 }
 
-// observe là lõi P&O gốc, KHÔNG còn nhánh ramThrottled bên trong — việc
-// đóng băng đã được xử lý ở đầu RecordFullFlush/RecordTimeoutFlush, nên khi
-// hàm này chạy, chắc chắn không đang trong tình trạng RAM khẩn cấp.
+// observe là lõi P&O gốc.
 func (p *FlushProbe) observe(eps float64, batchUsed int64) {
 	if !p.haveEPS {
 		p.haveEPS = true
