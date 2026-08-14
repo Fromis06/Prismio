@@ -7,17 +7,21 @@ import (
 	"time"
 )
 
-// FlushProbe automatically probes for the optimal Batch Size using the Perturb & Observe
-// (P&O) algorithm — similar to the idea behind MPPT (Maximum Power Point Tracking) in
-// solar panels: continuously nudge the batch size in one direction, observe the EPS
-// response ("balancing stick" — tilt one way, if it improves, tilt more; if it worsens,
-// reverse direction and nudge less, never staying completely still).
+// FlushProbe dò Batch Size tối ưu bằng Perturb & Observe (P&O), với 3 loại
+// tín hiệu được xử lý HOÀN TOÀN TÁCH BIỆT, không cộng dồn lên nhau:
 //
-// Unlike the old approach (least-squares on 200 samples, requiring 6 different batch sizes
-// to be trusted, hard ceiling based on EPS*maxTimeout could jump straight to hundreds of thousands):
-// FlushProbe keeps a SHORT history (16 most recent records), reacts IMMEDIATELY after each flush
-// instead of waiting for a 10s tick, and only changes by AT MOST one step at a time —
-// it cannot suddenly jump to an extreme value.
+//  1. "Batch full" (RecordFullFlush) -> P&O bình thường: đây là tín hiệu
+//     THẬT về khả năng đáp ứng của traffic hiện tại.
+//  2. "Timeout" underfill đáng kể (RecordTimeoutFlush) -> ép GIẢM TỈ LỆ
+//     (không qua cơ chế step chậm của P&O), NHƯNG chỉ khi batch lúc đó lấp
+//     chưa đủ phần lớn target — nếu lấp gần đầy (>timeoutNearFullRatio) thì
+//     coi là nhiễu định thời trong lúc traffic vẫn cao, bỏ qua để tránh
+//     giật cục giữa spike.
+//  3. RAM khẩn cấp (ForceSet, gọi từ AutoTuner) -> ghi đè trực tiếp, và
+//     trong lúc `ramThrottled==true`, CẢ (1) VÀ (2) ĐỀU BỊ ĐÓNG BĂNG hoàn
+//     toàn — không tự ý giảm thêm ở mỗi lần flush — để RAM guard (tick theo
+//     chu kỳ AutoTuner, chậm hơn nhiều so với tần suất flush) là nơi DUY
+//     NHẤT quyết định trong tình huống khẩn cấp, tránh cộng dồn cắt giảm.
 type FlushProbe struct {
 	mu sync.Mutex
 
@@ -27,7 +31,6 @@ type FlushProbe struct {
 	filled     bool
 	cumulative int64
 
-	// Hill-climbing (P&O) state
 	current   int64
 	step      int64
 	trend     int64
@@ -35,18 +38,14 @@ type FlushProbe struct {
 	haveEPS   bool
 	bestEPS   float64
 	bestBatch int64
-	sinceMove int // Number of stable flushes since the last batch size adjustment.
+	sinceMove int
 
-	// The CONVERGED estimate, updated only when a peak is successfully fitted — used
-	// specifically for Timeout. It deliberately DOES NOT use `current` (which
-	// continuously fluctuates during probing) to avoid the "alternating large/small batch"
-	// issue encountered previously.
 	stableBatch int64
 	haveStable  bool
 	smoothedEPS float64
 
 	ramThrottled       atomic.Bool
-	minBatch, maxBatch int64 // Absolute SAFETY RAIL, not a target.
+	minBatch, maxBatch int64
 }
 
 type probeRecord struct {
@@ -61,22 +60,34 @@ const (
 	probeMinStep      = 100
 	probeGrowFactor   = 1.5
 	probeShrinkFactor = 0.5
-	probeNoiseband    = 0.02 // ±2%: considered "unchanged" to resist measurement noise
-	probeReprobeEvery = 10   // after this many "stable" flushes, proactively nudge again to catch a peak that has shifted over time
+	probeNoiseband    = 0.02
+	probeReprobeEvery = 10
 	probeEWMAAlpha    = 0.2
-	// SafeMinBatch/SafeMaxBatch are the ultimate SAFETY RAILS, not target
-	// values — the truly optimal batch will converge to something much smaller
-	// than SafeMaxBatch once the actual EPS peak is found.
+
+	// timeoutNearFullRatio: nếu batch lúc "Timeout" đã lấp được từ tỉ lệ
+	// này trở lên so với target, coi là nhiễu định thời (ticker lệch pha
+	// với tốc độ dồn dữ liệu trong lúc traffic vẫn cao), KHÔNG decay — đây
+	timeoutNearFullRatio = 0.2
+
+	// timeoutDecayRate: mức ép giảm khi Timeout với underfill THẬT SỰ đáng
+	// kể (< timeoutNearFullRatio) — bỏ qua hoàn toàn cơ chế step chậm của
+	// P&O, giải quyết đúng vấn đề "decay quá chậm, học vẹt trên đỉnh ảo".
+	timeoutDecayRate = 0.10
+
 	SafeMinBatch int64 = 200
 	SafeMaxBatch int64 = 100_000
+
+	// RAMEmergencyMinBatch là sàn RIÊNG cho tình huống RAM khẩn cấp, cao
+	// hơn SafeMinBatch — cắt tới 200 khi đang cần xả backlog gấp có thể
+	// khiến chi phí cố định mỗi lần flush (network RTT, overhead pgx.Batch)
+	// chiếm ưu thế, làm throughput sụp thêm thay vì phục hồi (đúng vòng
+	// xoáy đã quan sát). Con số này nên tinh chỉnh lại theo C0 đo thực tế
+	// trên hệ thống của bạn nếu có điều kiện.
+	RAMEmergencyMinBatch int64 = 2000
 )
 
-// NewFlushProbe creates a new probe, starting from initialBatch (should be set to minBatch,
-// meaning it starts from the lowest level and climbs up, in the spirit of "initial batch
-// tuning starting near 0").
 func NewFlushProbe(minBatch, maxBatch, initialBatch int64) *FlushProbe {
 	return &FlushProbe{
-		// Initialize history as a ring buffer
 		history:   make([]probeRecord, probeHistoryCap),
 		cap:       probeHistoryCap,
 		current:   initialBatch,
@@ -88,36 +99,87 @@ func NewFlushProbe(minBatch, maxBatch, initialBatch int64) *FlushProbe {
 	}
 }
 
-// SetRAMThrottled is called by AutoTuner whenever the RAM guard changes state. When
-// throttled, the probe can only decrease, not increase, regardless of EPS.
 func (p *FlushProbe) SetRAMThrottled(v bool) {
 	p.ramThrottled.Store(v)
 }
 
-// RecordFlush is called by DataProcessor immediately after EACH successful flush —
-// it does not wait for AutoTuner's periodic tick, which is why it reacts much faster
-// than the previous design. Returns the batch size to be used for the next flush.
-func (p *FlushProbe) RecordFlush(batchSize int64) int64 {
+// ForceSet ép current/stableBatch về một giá trị cụ thể do BÊN NGOÀI quyết
+// định (RAM guard) — probe không "cãi lại" ở lần flush kế tiếp, mà coi đây
+// là điểm xuất phát mới, dò lại nhẹ nhàng (step co về mức nhỏ nhất) từ đó.
+func (p *FlushProbe) ForceSet(v int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.current = clamp64(v, p.minBatch, p.maxBatch)
+	p.stableBatch = p.current
+	p.haveStable = true
+	p.step = probeMinStep
+}
+
+// RecordFullFlush: batch đã lấp đầy đúng target -> tín hiệu THẬT, đưa vào
+// P&O bình thường. Đóng băng hoàn toàn nếu đang ramThrottled.
+func (p *FlushProbe) RecordFullFlush(n int64) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	eps := p.updateEPSLocked(n)
+	if p.ramThrottled.Load() {
+		return p.current
+	}
+	if eps > 0 {
+		p.observe(eps, n)
+	}
+	return p.current
+}
+
+// RecordTimeoutFlush: batch KHÔNG lấp đầy trong thời gian chờ cho phép.
+// Phân biệt "traffic giảm thật" (decay tỉ lệ) với "nhiễu định thời giữa
+// spike" (bỏ qua) bằng fillRatio so với target. Đóng băng hoàn toàn nếu
+// đang ramThrottled — lý do xem doc-comment của struct.
+func (p *FlushProbe) RecordTimeoutFlush(n int64) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.updateEPSLocked(n)
+	if p.ramThrottled.Load() {
+		return p.current
+	}
+	if p.current <= 0 {
+		return p.current
+	}
+
+	fillRatio := float64(n) / float64(p.current)
+	if fillRatio >= timeoutNearFullRatio {
+		// Suýt đầy khi Timeout bắn -> nhiều khả năng chỉ là lệch pha giữa
+		// ticker và tốc độ dồn dữ liệu trong lúc traffic vẫn cao, KHÔNG
+		// PHẢI traffic giảm thật. Giữ nguyên current, không decay.
+		return p.current
+	}
+
+	// Underfill đáng kể -> tín hiệu THẬT rằng traffic đã tụt dưới mức cần
+	// để lấp đầy batch hiện tại trong thời gian chờ. Ép giảm tỉ lệ ngay,
+	// bỏ qua cơ chế step chậm của P&O.
+	next := int64(float64(p.current) * (1 - timeoutDecayRate))
+	p.current = clamp64(next, p.minBatch, p.maxBatch)
+	p.stableBatch = p.current
+	p.haveStable = true
+	p.step = probeMinStep
+	return p.current
+}
+
+func (p *FlushProbe) updateEPSLocked(n int64) float64 {
 	now := time.Now()
 	prev, hasPrev := p.latestLocked()
 
-	p.cumulative += batchSize
-	p.push(probeRecord{at: now, batchSize: batchSize, cumulative: p.cumulative})
+	p.cumulative += n
+	p.push(probeRecord{at: now, batchSize: n, cumulative: p.cumulative})
 
 	if !hasPrev {
-		return p.current // Need at least 2 points to calculate EPS
+		return 0
 	}
-
 	dt := now.Sub(prev.at).Seconds()
 	if dt <= 0 {
-		return p.current
+		return 0
 	}
-	// EPS = difference between 2 cumulative points / time between 2 points — as discussed
-	// ("this record minus that record"). Mathematically, it equals batchSize/dt because
-	// cumulative always increases by exactly batchSize on each call, but written as cumulative
-	// to be more general if sampling at other points is desired later.
 	eps := float64(p.cumulative-prev.cumulative) / dt
 
 	if p.smoothedEPS == 0 {
@@ -125,25 +187,17 @@ func (p *FlushProbe) RecordFlush(batchSize int64) int64 {
 	} else {
 		p.smoothedEPS = p.smoothedEPS*(1-probeEWMAAlpha) + eps*probeEWMAAlpha
 	}
-
-	p.observe(eps, batchSize)
-	return p.current
-}
-
-// observe is the core of the Perturb & Observe algorithm.
-func (p *FlushProbe) observe(eps float64, batchUsed int64) {
 	if eps > p.bestEPS {
 		p.bestEPS = eps
-		p.bestBatch = batchUsed
+		p.bestBatch = n
 	}
+	return eps
+}
 
-	if p.ramThrottled.Load() { // RAM is constrained: always decrease, ignore EPS
-		p.move(-1)
-		p.trend = -1
-		p.sinceMove = 0
-		return
-	}
-
+// observe là lõi P&O gốc, KHÔNG còn nhánh ramThrottled bên trong — việc
+// đóng băng đã được xử lý ở đầu RecordFullFlush/RecordTimeoutFlush, nên khi
+// hàm này chạy, chắc chắn không đang trong tình trạng RAM khẩn cấp.
+func (p *FlushProbe) observe(eps float64, batchUsed int64) {
 	if !p.haveEPS {
 		p.haveEPS = true
 		p.lastEPS = eps
@@ -157,27 +211,22 @@ func (p *FlushProbe) observe(eps float64, batchUsed int64) {
 
 	switch {
 	case delta > probeNoiseband:
-		// Improving -> continue in the same direction, accelerate the step size (like momentum).
 		p.step = min64(int64(float64(p.step)*probeGrowFactor), (p.maxBatch-p.minBatch)/4)
 		p.move(p.trend)
 		p.sinceMove = 0
 
 	case delta < -probeNoiseband:
-		// Worsening -> just overshot the peak. Try to fit a local quadratic from the short history
-		// to jump closer to the peak, instead of slowly binary searching.
 		if b, ok := p.fitLocalPeakLocked(); ok {
 			p.jumpTo(b)
-			p.step = probeMinStep // Converged, reduce step size, just "balance" gently around the peak.
+			p.step = probeMinStep
 		} else {
 			p.trend = -p.trend
 			p.step = max64(int64(float64(p.step)*probeShrinkFactor), probeMinStep)
 			p.move(p.trend)
 		}
 		p.sinceMove = 0
+
 	default:
-		// Nearly unchanged -> considered at the peak. DO NOT stay still forever —
-		// after every `probeReprobeEvery` stable flushes, actively nudge a small step
-		// to detect if the peak has shifted.
 		p.sinceMove++
 		if p.sinceMove >= probeReprobeEvery {
 			p.step = probeMinStep
@@ -199,16 +248,12 @@ func (p *FlushProbe) jumpTo(b int64) {
 	p.trend = 1
 }
 
-// fitLocalPeakLocked performs a quadratic least-squares fit (E = a*B² + b*B + c) on the
-// short available history. It returns the vertex (peak) if the parabola opens downwards (a<0)
-// AND the peak lies WITHIN the range of batch sizes actually probed — it does not extrapolate
-// outside the observed region (extrapolating with limited data is very risky, similar to the
-// previous analysis about solving a 3-point system amplifying errors).
 func (p *FlushProbe) fitLocalPeakLocked() (int64, bool) {
 	recs := p.snapshotLocked()
 	if len(recs) < 5 {
 		return 0, false
 	}
+
 	type point struct{ b, eps float64 }
 	pts := make([]point, 0, len(recs)-1)
 	minB, maxB := math.MaxFloat64, -math.MaxFloat64
@@ -228,7 +273,7 @@ func (p *FlushProbe) fitLocalPeakLocked() (int64, bool) {
 		}
 	}
 	if len(pts) < 5 || maxB-minB < float64(probeMinStep) {
-		return 0, false // Not enough diverse data to fit meaningfully
+		return 0, false
 	}
 
 	var n, sx, sx2, sx3, sx4, sy, sxy, sx2y float64
@@ -253,34 +298,28 @@ func (p *FlushProbe) fitLocalPeakLocked() (int64, bool) {
 	a := det3(n, sx, sy, sx, sx2, sxy, sx2, sx3, sx2y) / det
 
 	if a >= 0 {
-		return 0, false // Not a downward-opening parabola in the current data -> don't trust
+		return 0, false
 	}
 	vertex := -b1 / (2 * a)
 	if vertex < minB || vertex > maxB {
-		return 0, false // Peak extrapolates outside the probed region -> don't trust, let P&O continue probing instead of guessing
+		return 0, false
 	}
 	return int64(vertex), true
 }
 
-// SmoothedEPS returns the EWMA-smoothed EPS — more stable than instantaneous EPS
-// used to decide the probing direction, suitable as input for Timeout.
 func (p *FlushProbe) SmoothedEPS() float64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.smoothedEPS
 }
 
-// StableBatch returns the CONVERGED estimate (from the most recent successful peak fit),
-// false if it has never converged. It deliberately DOES NOT return `current` — that
-// value continuously fluctuates during probing, using it for Timeout would cause
-// Timeout to be erratic, exactly the problem encountered in the previous design.
 func (p *FlushProbe) StableBatch() (int64, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.haveStable {
 		return p.stableBatch, true
 	}
-	return p.bestBatch, p.bestEPS > 0 // fallback: best point ever seen, even if not officially peak-fitted
+	return p.bestBatch, p.bestEPS > 0
 }
 
 func (p *FlushProbe) latestLocked() (probeRecord, bool) {

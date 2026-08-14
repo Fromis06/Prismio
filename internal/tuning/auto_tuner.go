@@ -95,7 +95,7 @@ func (at *AutoTuner) runLoop() {
 func (at *AutoTuner) checkRAMGuard() {
 	v, err := mem.VirtualMemory()
 	if err != nil {
-		slog.Warn("AUTO-TUNER: Failed to read system RAM, skipping RAM guard tick", "error", err)
+		slog.Warn("AUTO-TUNER: Không đọc được RAM hệ thống, bỏ qua RAM guard tick này", "error", err)
 		return
 	}
 
@@ -103,24 +103,42 @@ func (at *AutoTuner) checkRAMGuard() {
 	case ramNormal:
 		if v.UsedPercent >= ramCeilingPercent {
 			at.ramState = ramThrottled
-			at.GlobalState.Probe.SetRAMThrottled(true)
-			cur := at.Config.Batch.BatchMaxSize.Load()
-			next := cur / 2
-			if next < models.SafeMinBatch {
-				next = models.SafeMinBatch
-			}
-			at.Config.Batch.BatchMaxSize.Store(next)
-			slog.Warn("AUTO-TUNER: RAM ceiling reached, immediately cutting batch size",
-				"ram_used_percent", v.UsedPercent, "batch_size_before", cur, "batch_size_after", next)
+			at.GlobalState.Probe.SetRAMThrottled(true) // đóng băng probe NGAY — mọi lần flush tiếp theo sẽ không tự giảm thêm nữa
+			at.haltBatch(v.UsedPercent, "Chạm trần RAM lần đầu, cắt batch size ngay lập tức")
 		}
+
 	case ramThrottled:
 		if v.UsedPercent < ramSafeResumePercent {
 			at.ramState = ramNormal
 			at.GlobalState.Probe.SetRAMThrottled(false)
-			slog.Info("AUTO-TUNER: RAM is below safe threshold, allowing FlushProbe to increase batch again",
+			slog.Info("AUTO-TUNER: RAM đã về dưới ngưỡng an toàn, cho phép FlushProbe hoạt động trở lại",
 				"ram_used_percent", v.UsedPercent)
+		} else if v.UsedPercent >= ramCeilingPercent {
+			// Vẫn còn trên trần sau ÍT NHẤT MỘT CHU KỲ TICK (~10s) kể từ
+			// lần cắt trước — đủ thời gian để backlog có cơ hội xả bớt
+			// trước khi cắt thêm. Đây là điểm khác biệt cốt lõi so với
+			// trước: cắt tối đa 1 lần MỖI TICK AUTOTUNER, không phải mỗi
+			// lần flush (có thể xảy ra hàng chục/hàng trăm lần trong cùng
+			// khoảng thời gian đó) — chính là nguyên nhân vòng xoáy tụt
+			// batch đã quan sát.
+			at.haltBatch(v.UsedPercent, "Vẫn trên trần RAM sau 1 chu kỳ, cắt thêm")
 		}
 	}
+}
+
+// haltBatch cắt nửa batch size hiện tại, chặn ở RAMEmergencyMinBatch (cao
+// hơn sàn dò thường của probe) để tránh rơi vào vùng chi phí cố định mỗi
+// lần flush chiếm ưu thế — làm throughput sụp thêm thay vì phục hồi.
+func (at *AutoTuner) haltBatch(ramPercent float64, note string) {
+	cur := at.Config.Batch.BatchMaxSize.Load()
+	next := cur / 2
+	if next < models.RAMEmergencyMinBatch {
+		next = models.RAMEmergencyMinBatch
+	}
+	at.Config.Batch.BatchMaxSize.Store(next)
+	at.GlobalState.Probe.ForceSet(next) // đồng bộ lại probe theo giá trị vừa ép — probe không "cãi lại" ở lần flush kế tiếp
+	slog.Warn("AUTO-TUNER: "+note,
+		"ram_used_percent", ramPercent, "batch_size_before", cur, "batch_size_after", next)
 }
 
 func (at *AutoTuner) ramStateLabel() string {

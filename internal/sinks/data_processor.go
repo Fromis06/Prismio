@@ -155,14 +155,19 @@ func (dp *DataProcessor) workerLoop() {
 		} else {
 			if ckpt > 0 {
 				dp.GlobalState.UpdateCheckpoint(dp.Name, ckpt)
-				// Reset checkpoint only after it has actually been sent
 				currentLastCheckpoint = 0
 			}
-			if reason != "Shutdown" {
-				// Update the actual target, no longer rounded by bag size
-				nextTarget := dp.GlobalState.Probe.RecordFlush(n)
-				dp.Config.Batch.BatchMaxSize.Store(nextTarget)
+
+			var nextTarget int64
+			switch reason {
+			case "Batch full":
+				nextTarget = dp.GlobalState.Probe.RecordFullFlush(n)
+			case "Timeout":
+				nextTarget = dp.GlobalState.Probe.RecordTimeoutFlush(n)
+			default:
+				nextTarget = dp.Config.Batch.BatchMaxSize.Load()
 			}
+			dp.Config.Batch.BatchMaxSize.Store(nextTarget)
 		}
 
 		// Truncate the flushed portion, keep the remainder for the next cycle.
