@@ -7,36 +7,20 @@ import (
 	"time"
 )
 
-// FlushProbe dò Batch Size tối ưu bằng Perturb & Observe (P&O), với 3 loại
-// tín hiệu được xử lý HOÀN TOÀN TÁCH BIỆT, không cộng dồn lên nhau:
+// FlushProbe searches for an efficient batch size using Perturb and Observe
+// (P&O). It handles three independent signals:
 //
-//  1. "Batch full" (RecordFullFlush) -> P&O bình thường: đây là tín hiệu
-//     THẬT về khả năng đáp ứng của traffic hiện tại.
-//  2. "Timeout" underfill đáng kể (RecordTimeoutFlush) -> ép GIẢM TỈ LỆ
-//     (không qua cơ chế step chậm của P&O), NHƯNG chỉ khi batch lúc đó lấp
-//     chưa đủ phần lớn target — nếu lấp gần đầy (>timeoutNearFullRatio) thì
-//     coi là nhiễu định thời trong lúc traffic vẫn cao, bỏ qua để tránh
-//     giật cục giữa spike.
-//  3. RAM khẩn cấp (ForceSet, gọi từ AutoTuner) -> ghi đè trực tiếp, và
-//     trong lúc `ramThrottled==true`, CẢ (1) VÀ (2) ĐỀU BỊ ĐÓNG BĂNG hoàn
-//     toàn — không tự ý giảm thêm ở mỗi lần flush — để RAM guard (tick theo
-//     chu kỳ AutoTuner, chậm hơn nhiều so với tần suất flush) là nơi DUY
-//     NHẤT quyết định trong tình huống khẩn cấp, tránh cộng dồn cắt giảm.
+//  1. A full batch provides a normal P&O signal.
+//  2. A significantly underfilled timeout can reduce the batch size after
+//     enough consecutive observations. Near-full timeouts are treated as
+//     timing noise while traffic remains high.
+//  3. ForceSet applies an emergency RAM limit. While RAM throttling is active,
+//     full-batch and timeout signals cannot change the batch size.
 //
-// GHI CHÚ (sau khi vá lỗi "timeout ngược" + "batch không leo lên đủ cao khi
-// RTT cao"):
-//   - observe() giờ ra quyết định dựa trên smoothedEPS (EWMA), KHÔNG dùng
-//     eps thô tức thời nữa. eps thô giữa 2 lần flush liên tiếp bị nhiễu bởi
-//     jitter của chính thời gian flush (RTT mạng), nên trước đây dễ khiến
-//     P&O nhầm nhiễu mạng thành hiệu ứng thật của batch size, gây xu hướng
-//     giảm nhiều hơn tăng khi RTT cao.
-//   - "stableBatch" (giá trị dùng cho AutoTuner.tuneTimeout) trước đây chỉ
-//     được cập nhật ở các mốc rời rạc (jumpTo/ForceSet/decay), nên trong
-//     một pha đang leo dần qua move() nó bị "đứng yên" ở giá trị cũ trong
-//     khi p.current (batch thật đang chạy) đã tăng lên nhiều — đây chính là
-//     nguyên nhân hiện tượng "batch cao nhưng timeout tính ra thấp, batch
-//     thấp nhưng timeout tính ra cao". Đã thay bằng smoothedBatch, một EWMA
-//     luôn bám theo p.current mỗi khi nó thay đổi, ở bất kỳ nhánh nào.
+// Smoothed EPS and batch estimates reduce sensitivity to network jitter. A
+// timeout underfill must be observed repeatedly before the probe reduces the
+// batch size, preventing isolated timing fluctuations from causing a sharp
+// downward adjustment.
 type FlushProbe struct {
 	mu sync.Mutex
 
@@ -56,15 +40,18 @@ type FlushProbe struct {
 	sinceMove int
 
 	smoothedEPS float64
-	lastRawEPS  float64 // eps thô của lần flush gần nhất — chỉ dùng để log/chẩn đoán, KHÔNG dùng để ra quyết định.
+	lastRawEPS  float64 // Raw EPS from the latest flush, used for diagnostics only.
 
-	// smoothedBatch là EWMA của p.current, cập nhật ở MỌI nơi p.current thay
-	// đổi (move/jumpTo/ForceSet/decay) — thay thế hoàn toàn "stableBatch" cũ
-	// vốn chỉ cập nhật ở vài mốc rời rạc và dễ bị lag so với batch thật.
+	// smoothedBatch is an EWMA of p.current, updated whenever the current
+	// batch size changes.
 	smoothedBatch     float64
 	haveSmoothedBatch bool
 
-	lastFlushAt time.Time // thời điểm ghi nhận lần flush gần nhất (Full hoặc Timeout) — dùng để AutoTuner phát hiện tình trạng idle.
+	// consecutiveUnderfill counts consecutive significantly underfilled
+	// timeouts. It resets after a near-full timeout or a full-batch flush.
+	consecutiveUnderfill int
+
+	lastFlushAt time.Time // Time of the latest full or timeout flush.
 
 	ramThrottled       atomic.Bool
 	minBatch, maxBatch int64
@@ -86,31 +73,28 @@ const (
 	probeReprobeEvery = 10
 	probeEWMAAlpha    = 0.2
 
-	// probeBatchEWMAAlpha làm mượt p.current thành smoothedBatch. Alpha lớn
-	// hơn probeEWMAAlpha một chút vì batch size là giá trị AutoTuner mình
-	// tự set (ít nhiễu đo lường hơn eps), nên có thể bám sát current nhanh
-	// hơn mà vẫn tránh hiện tượng "nhảy số" mỗi micro-thay đổi.
+	// probeBatchEWMAAlpha smooths p.current into smoothedBatch. Batch size is
+	// less noisy than EPS, so it can use a slightly more responsive alpha.
 	probeBatchEWMAAlpha = 0.3
 
-	// timeoutNearFullRatio: nếu batch lúc "Timeout" đã lấp được từ tỉ lệ
-	// này trở lên so với target, coi là nhiễu định thời (ticker lệch pha
-	// với tốc độ dồn dữ liệu trong lúc traffic vẫn cao), KHÔNG decay — đây
+	// timeoutNearFullRatio treats a nearly full timeout as timing noise while
+	// traffic remains high; it does not trigger decay.
 	timeoutNearFullRatio = 0.2
 
-	// timeoutDecayRate: mức ép giảm khi Timeout với underfill THẬT SỰ đáng
-	// kể (< timeoutNearFullRatio) — bỏ qua hoàn toàn cơ chế step chậm của
-	// P&O, giải quyết đúng vấn đề "decay quá chậm, học vẹt trên đỉnh ảo".
+	// timeoutDecayRate is the proportional reduction applied after enough
+	// consecutive significantly underfilled timeouts.
 	timeoutDecayRate = 0.10
+
+	// minConsecutiveUnderfill prevents a single noisy timeout from shrinking
+	// the batch size.
+	minConsecutiveUnderfill = 3
 
 	SafeMinBatch int64 = 200
 	SafeMaxBatch int64 = 100_000
 
-	// RAMEmergencyMinBatch là sàn RIÊNG cho tình huống RAM khẩn cấp, cao
-	// hơn SafeMinBatch — cắt tới 200 khi đang cần xả backlog gấp có thể
-	// khiến chi phí cố định mỗi lần flush (network RTT, overhead pgx.Batch)
-	// chiếm ưu thế, làm throughput sụp thêm thay vì phục hồi (đúng vòng
-	// xoáy đã quan sát). Con số này nên tinh chỉnh lại theo C0 đo thực tế
-	// trên hệ thống của bạn nếu có điều kiện.
+	// RAMEmergencyMinBatch is the minimum batch size used during RAM
+	// throttling. Keeping it above the normal floor avoids excessive per-flush
+	// overhead while the backlog is being drained.
 	RAMEmergencyMinBatch int64 = 2000
 )
 
@@ -131,19 +115,19 @@ func (p *FlushProbe) SetRAMThrottled(v bool) {
 	p.ramThrottled.Store(v)
 }
 
-// ForceSet ép current/smoothedBatch về một giá trị cụ thể do BÊN NGOÀI quyết
-// định (RAM guard) — probe không "cãi lại" ở lần flush kế tiếp, mà coi đây
-// là điểm xuất phát mới, dò lại nhẹ nhàng (step co về mức nhỏ nhất) từ đó.
+// ForceSet applies an externally selected batch size, such as a RAM guard
+// limit, and restarts probing from that value.
 func (p *FlushProbe) ForceSet(v int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.current = clamp64(v, p.minBatch, p.maxBatch)
 	p.trackBatchLocked()
 	p.step = probeMinStep
+	p.consecutiveUnderfill = 0 // Start a new underfill sequence.
 }
 
-// RecordFullFlush: batch đã lấp đầy đúng target -> tín hiệu THẬT, đưa vào
-// P&O bình thường. Đóng băng hoàn toàn nếu đang ramThrottled.
+// RecordFullFlush records a full batch as a normal P&O signal. It has no
+// effect while RAM throttling is active.
 func (p *FlushProbe) RecordFullFlush(n int64) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -151,21 +135,25 @@ func (p *FlushProbe) RecordFullFlush(n int64) int64 {
 	p.updateEPSLocked(n)
 	p.lastFlushAt = time.Now()
 
+	// A full batch proves that traffic remains sufficient and breaks any
+	// underfill sequence.
+	p.consecutiveUnderfill = 0
+
 	if p.ramThrottled.Load() {
 		return p.current
 	}
-	// Quyết định P&O dùng smoothedEPS (đã lọc nhiễu RTT/jitter qua EWMA),
-	// KHÔNG dùng eps thô — xem doc-comment của struct để biết lý do.
+	// Use smoothed EPS to reduce the effect of RTT and network jitter.
 	if p.smoothedEPS > 0 {
 		p.observe(p.smoothedEPS, n)
 	}
 	return p.current
 }
 
-// RecordTimeoutFlush: batch KHÔNG lấp đầy trong thời gian chờ cho phép.
-// Phân biệt "traffic giảm thật" (decay tỉ lệ) với "nhiễu định thời giữa
-// spike" (bỏ qua) bằng fillRatio so với target. Đóng băng hoàn toàn nếu
-// đang ramThrottled — lý do xem doc-comment của struct.
+// RecordTimeoutFlush records a batch that did not fill before the timeout.
+// It reduces the batch size only after repeated significant underfills.
+//
+// Near-full timeouts are treated as timing noise, and RAM throttling disables
+// automatic changes entirely.
 func (p *FlushProbe) RecordTimeoutFlush(n int64) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -182,19 +170,24 @@ func (p *FlushProbe) RecordTimeoutFlush(n int64) int64 {
 
 	fillRatio := float64(n) / float64(p.current)
 	if fillRatio >= timeoutNearFullRatio {
-		// Suýt đầy khi Timeout bắn -> nhiều khả năng chỉ là lệch pha giữa
-		// ticker và tốc độ dồn dữ liệu trong lúc traffic vẫn cao, KHÔNG
-		// PHẢI traffic giảm thật. Giữ nguyên current, không decay.
+		// A near-full timeout is likely timing noise while traffic remains high.
+		p.consecutiveUnderfill = 0
 		return p.current
 	}
 
-	// Underfill đáng kể -> tín hiệu THẬT rằng traffic đã tụt dưới mức cần
-	// để lấp đầy batch hiện tại trong thời gian chờ. Ép giảm tỉ lệ ngay,
-	// bỏ qua cơ chế step chậm của P&O.
+	// Accumulate evidence before reducing the batch size.
+	p.consecutiveUnderfill++
+	if p.consecutiveUnderfill < minConsecutiveUnderfill {
+		return p.current
+	}
+
+	// Repeated underfills indicate that traffic is insufficient for the current
+	// batch size. Apply the proportional reduction and restart the counter.
 	next := int64(float64(p.current) * (1 - timeoutDecayRate))
 	p.current = clamp64(next, p.minBatch, p.maxBatch)
 	p.trackBatchLocked()
 	p.step = probeMinStep
+	p.consecutiveUnderfill = 0
 	return p.current
 }
 
@@ -220,9 +213,8 @@ func (p *FlushProbe) updateEPSLocked(n int64) float64 {
 	} else {
 		p.smoothedEPS = p.smoothedEPS*(1-probeEWMAAlpha) + eps*probeEWMAAlpha
 	}
-	// bestEPS/bestBatch giờ theo dõi smoothedEPS thay vì eps thô, cùng lý do
-	// lọc nhiễu như observe() — tránh "best ever" bị ghi nhận nhầm từ một
-	// đỉnh nhiễu tức thời không lặp lại được.
+	// Track the smoothed signal so an isolated spike cannot become the best
+	// observed result.
 	if p.smoothedEPS > p.bestEPS {
 		p.bestEPS = p.smoothedEPS
 		p.bestBatch = n
@@ -230,10 +222,8 @@ func (p *FlushProbe) updateEPSLocked(n int64) float64 {
 	return eps
 }
 
-// observe là lõi P&O gốc, KHÔNG còn nhánh ramThrottled bên trong — việc
-// đóng băng đã được xử lý ở đầu RecordFullFlush/RecordTimeoutFlush, nên khi
-// hàm này chạy, chắc chắn không đang trong tình trạng RAM khẩn cấp.
-// eps truyền vào đây LUÔN là smoothedEPS (xem RecordFullFlush).
+// observe implements the core P&O step. RAM throttling is handled by the
+// public recording methods before this function is called.
 func (p *FlushProbe) observe(eps float64, batchUsed int64) {
 	if !p.haveEPS {
 		p.haveEPS = true
@@ -285,10 +275,7 @@ func (p *FlushProbe) jumpTo(b int64) {
 	p.trend = 1
 }
 
-// trackBatchLocked cập nhật smoothedBatch (EWMA của p.current) — được gọi ở
-// MỌI nơi p.current thay đổi (move/jumpTo/ForceSet/decay), nên
-// StableBatch() không bao giờ bị "đứng yên" lag lại phía sau batch thật
-// đang chạy như "stableBatch" cũ.
+// trackBatchLocked updates smoothedBatch after each current batch-size change.
 func (p *FlushProbe) trackBatchLocked() {
 	if !p.haveSmoothedBatch {
 		p.smoothedBatch = float64(p.current)
@@ -363,9 +350,7 @@ func (p *FlushProbe) SmoothedEPS() float64 {
 	return p.smoothedEPS
 }
 
-// StableBatch trả về ước lượng batch size "ổn định" dùng cho
-// AutoTuner.tuneTimeout — nay là smoothedBatch (EWMA bám sát p.current mọi
-// lúc), thay cho stableBatch cũ vốn chỉ cập nhật ở vài mốc rời rạc.
+// StableBatch returns the smoothed batch-size estimate used by the auto tuner.
 func (p *FlushProbe) StableBatch() (int64, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -375,21 +360,15 @@ func (p *FlushProbe) StableBatch() (int64, bool) {
 	return p.bestBatch, p.bestEPS > 0
 }
 
-// LastFlushAt trả về thời điểm ghi nhận lần flush gần nhất (Full hoặc
-// Timeout). AutoTuner dùng giá trị này để phân biệt "traffic đang thấp
-// thật" với "hệ thống hoàn toàn idle" — trước đây không phân biệt được,
-// khiến tuneTimeout tính lại timeout từ dữ liệu đã đóng băng mỗi khi idle,
-// luôn bị đẩy lên trần maxTimeoutMs một cách vô nghĩa (xem auto_tuner.go).
+// LastFlushAt returns the time of the latest full or timeout flush.
 func (p *FlushProbe) LastFlushAt() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastFlushAt
 }
 
-// FlushStats là một snapshot chỉ dùng cho mục đích log/chẩn đoán chi tiết
-// mỗi lần flush (xem DataProcessor.flusherLoop) — KHÔNG dùng để ra quyết
-// định tuning, chỉ để có dữ liệu thực nghiệm khi cần kiểm chứng hành vi
-// P&O (ví dụ so sánh RawEPS jitter cao bao nhiêu so với SmoothedEPS).
+// FlushStats contains diagnostic values captured for a flush. It is not used
+// to make tuning decisions.
 type FlushStats struct {
 	RawEPS      float64
 	SmoothedEPS float64

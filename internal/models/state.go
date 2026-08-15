@@ -24,7 +24,7 @@ type GlobalState struct {
 	//
 	// This REPLACES the old approach of cutting BatchMaxSize / freezing
 	// FlushProbe when RAM hit its ceiling. Cutting batch size only tunes
-	// flush THROUGHPUT at the sink — it does nothing about the actual cause
+	// flush throughput at the sink; it does not address the underlying cause.
 	// of RAM growth (WAL ingest rate outpacing flush rate), and over
 	// high-RTT links to the sink it actively makes things worse: fewer
 	// events per round-trip means lower throughput, which widens the

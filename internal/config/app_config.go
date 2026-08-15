@@ -43,7 +43,7 @@ type DataConsumerConfig struct {
 // The configurations in this section use atomic types to allow for live-tuning
 // while the application is running, without requiring a restart.
 //
-// NOTE: not every field here can actually be changed while the app is running —
+// Note: not every field here can be changed while the app is running —
 // some are only ever read once, at startup (see field-level comments below).
 // Whether live-tuning takes effect at all is also gated by TuningConfig.Mode
 // (see below): in "manual" mode the AutoTuner goroutine is never started, so
@@ -183,7 +183,7 @@ func NewDefaultConfig() *AppConfig {
 	// config. Switch to "automatic" explicitly in the config UI once wanted.
 	cfg.Tuning.Mode = "manual"
 
-	// Hash a default API key. IMPORTANT: This key MUST be changed in production environments!
+	// Hash a default API key. This key must be changed in production environments.
 	cfg.Monitor.HashedAPIKeys = make(map[string]string)
 	defaultAPIKey := "your-super-secret-api-key"
 	hashedDefaultAPIKey := sha256.Sum256([]byte(defaultAPIKey))

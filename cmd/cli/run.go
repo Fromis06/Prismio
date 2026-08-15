@@ -43,7 +43,7 @@ func Run() {
 	dashboard := NewDashboard(tuiApp)
 	logger.Initialize(dashboard.LogWriter())
 
-	// Load the shared accounts file. This is the ONLY data needed before login,
+	// Load the shared accounts file. This is the only data needed before login,
 	// as it's required to authenticate the user and determine which per-account
 	// configuration file (configs/<username>.yaml) to load next.
 	accounts, err := config.LoadAccounts(accountsPath)
@@ -313,13 +313,13 @@ func Run() {
 			}
 
 			// 2. Flush any remaining batches still buffered in each sink. Before
-			//    this fix, this step was COMPLETELY MISSING in CLI mode,
+			//    this fix, this step was missing in CLI mode,
 			//    causing any batch that hadn't reached BatchMaxSize / hadn't
 			//    reached BatchTimeout to be dropped entirely on app exit,
 			//    without being written to the sink in time.
 			runningApp.MultiSink.Stop()
 
-			// 3. Save the final checkpoint — MUST run after step 2, otherwise
+			// 3. Save the final checkpoint after step 2; otherwise,
 			//    the checkpoint written to disk would be older than the batch
 			//    just flushed successfully above.
 			runningApp.Shutdown()

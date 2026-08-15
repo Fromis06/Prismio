@@ -23,15 +23,12 @@ const (
 	minTimeoutMs int64 = 20
 	maxTimeoutMs int64 = 5_000
 
-	// idleStaleFactor: nếu KHÔNG có lần flush thực sự nào (Full hoặc
-	// Timeout) xảy ra trong vòng idleStaleFactor lần chu kỳ tick gần nhất,
-	// coi hệ thống đang idle (không có traffic) thay vì "traffic đang thấp
-	// thật". Trước khi có cờ này, tuneTimeout không phân biệt được 2 trường
-	// hợp: khi hệ thống rảnh hoàn toàn (không có flush nào), nó vẫn tính
-	// lại timeout từ SmoothedEPS/StableBatch ĐÃ ĐÓNG BĂNG từ lần flush cuối
-	// cùng trước đó — và vì cả 2 giá trị đó không đổi trong khi thời gian
-	// trôi qua, công thức b/eps*1000 luôn cho ra một con số bị đẩy thẳng
-	// lên trần maxTimeoutMs, dù nó không phản ánh gì về traffic hiện tại.
+	// timeoutMarginFactor adds a safety margin to the estimated time needed to
+	// fill a batch, reducing false underfill signals caused by traffic jitter.
+	timeoutMarginFactor = 1.3
+
+	// idleStaleFactor defines how many tuner cycles may pass without a flush
+	// before the system is considered idle.
 	idleStaleFactor = 2
 )
 
@@ -119,7 +116,7 @@ func (at *AutoTuner) checkRAMGuard() {
 	case ramNormal:
 		if v.UsedPercent >= ramCeilingPercent {
 			at.ramState = ramThrottled
-			at.GlobalState.Probe.SetRAMThrottled(true) // đóng băng probe NGAY — mọi lần flush tiếp theo sẽ không tự giảm thêm nữa
+			at.GlobalState.Probe.SetRAMThrottled(true) // Freeze probe adjustments during throttling.
 			at.haltBatch(v.UsedPercent, "Chạm trần RAM lần đầu, cắt batch size ngay lập tức")
 		}
 
@@ -130,21 +127,15 @@ func (at *AutoTuner) checkRAMGuard() {
 			slog.Info("AUTO-TUNER: RAM đã về dưới ngưỡng an toàn, cho phép FlushProbe hoạt động trở lại",
 				"ram_used_percent", v.UsedPercent)
 		} else if v.UsedPercent >= ramCeilingPercent {
-			// Vẫn còn trên trần sau ÍT NHẤT MỘT CHU KỲ TICK (~10s) kể từ
-			// lần cắt trước — đủ thời gian để backlog có cơ hội xả bớt
-			// trước khi cắt thêm. Đây là điểm khác biệt cốt lõi so với
-			// trước: cắt tối đa 1 lần MỖI TICK AUTOTUNER, không phải mỗi
-			// lần flush (có thể xảy ra hàng chục/hàng trăm lần trong cùng
-			// khoảng thời gian đó) — chính là nguyên nhân vòng xoáy tụt
-			// batch đã quan sát.
+			// Apply at most one reduction per tuner cycle, giving the backlog time
+			// to drain before another reduction.
 			at.haltBatch(v.UsedPercent, "Vẫn trên trần RAM sau 1 chu kỳ, cắt thêm")
 		}
 	}
 }
 
-// haltBatch cắt nửa batch size hiện tại, chặn ở RAMEmergencyMinBatch (cao
-// hơn sàn dò thường của probe) để tránh rơi vào vùng chi phí cố định mỗi
-// lần flush chiếm ưu thế — làm throughput sụp thêm thay vì phục hồi.
+// haltBatch halves the current batch size, bounded by the emergency minimum
+// to avoid excessive per-flush overhead while the backlog drains.
 func (at *AutoTuner) haltBatch(ramPercent float64, note string) {
 	cur := at.Config.Batch.BatchMaxSize.Load()
 	next := cur / 2
@@ -152,7 +143,7 @@ func (at *AutoTuner) haltBatch(ramPercent float64, note string) {
 		next = models.RAMEmergencyMinBatch
 	}
 	at.Config.Batch.BatchMaxSize.Store(next)
-	at.GlobalState.Probe.ForceSet(next) // đồng bộ lại probe theo giá trị vừa ép — probe không "cãi lại" ở lần flush kế tiếp
+	at.GlobalState.Probe.ForceSet(next) // Keep the probe aligned with the forced value.
 	slog.Warn("AUTO-TUNER: "+note,
 		"ram_used_percent", ramPercent, "batch_size_before", cur, "batch_size_after", next)
 }
@@ -183,16 +174,12 @@ func (at *AutoTuner) tuneWorkerCount() {
 	}
 }
 
-// tuneTimeout DELIBERATELY does not read the current BatchMaxSize (which fluctuates
-// continuously because FlushProbe is probing), but instead uses StableBatch() (the CONVERGED estimate)
-// along with SmoothedEPS() (instead of instantaneous EPS) — separating these two quantities from
-// the batch probing loop, solving the "alternating large/small batch" problem encountered previously.
+// tuneTimeout uses StableBatch and SmoothedEPS instead of the currently
+// probing batch size and instantaneous EPS. This keeps timeout tuning separate
+// from batch-size probing and avoids alternating large and small estimates.
 //
-// Trước khi retune, kiểm tra xem có flush nào xảy ra gần đây không — nếu hệ
-// thống đang idle (không có traffic, xem idleStaleFactor ở trên), giữ
-// nguyên timeout hiện tại thay vì tính lại từ SmoothedEPS/StableBatch đã bị
-// đóng băng từ lần flush cuối cùng, vốn luôn cho ra kết quả vô nghĩa bị đẩy
-// lên trần maxTimeoutMs.
+// tuneTimeout updates the timeout from smoothed EPS and the converged batch
+// estimate. It keeps the current value while the system is idle.
 func (at *AutoTuner) tuneTimeout() {
 	if at.tickInterval > 0 {
 		idleFor := time.Since(at.GlobalState.Probe.LastFlushAt())
@@ -207,7 +194,7 @@ func (at *AutoTuner) tuneTimeout() {
 		return // not enough stable data, keep current timeout instead of guessing
 	}
 
-	timeoutMs := int64(float64(b) / eps * 1000.0)
+	timeoutMs := int64(float64(b) / eps * 1000.0 * timeoutMarginFactor)
 	if timeoutMs < minTimeoutMs {
 		timeoutMs = minTimeoutMs
 	}

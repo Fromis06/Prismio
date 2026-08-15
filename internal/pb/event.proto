@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package pb;
 
-// Khai báo đường dẫn module để import trong Go
+// Go import path for generated code.
 option go_package = "my-cdc/pb";
 
 enum Action {
@@ -20,9 +20,9 @@ message Checkpoint {
 }
 
 message ChangeEvent {
-  // source_type là tên định danh của driver nguồn (VD: "postgres", "mysql"...),
-  // khớp với DBConnection.Type trong config. Dùng string thay vì enum để driver mới
-  // (folder mới trong internal/capture/<ten>) không cần sửa lại file .proto này.
+  // Identifier of the source driver (for example, "postgres" or "mysql").
+  // A string keeps the protocol extensible without changing this schema when
+  // a new driver is added.
   string source_type = 1;
   Action action = 2;
   string schema = 3;

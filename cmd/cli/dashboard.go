@@ -29,11 +29,11 @@ func NewDashboard(tuiApp *tview.Application) *Dashboard {
 	statusPanel.SetBorder(true).SetTitle(" System Status ")
 
 	logPanel := tview.NewTextView().
-    SetDynamicColors(true).
-    SetScrollable(true).
-    SetChangedFunc(func() {
-        tuiApp.QueueUpdateDraw(func() {})
-    })
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetChangedFunc(func() {
+			tuiApp.QueueUpdateDraw(func() {})
+		})
 	logPanel.SetBorder(true).SetTitle(" Logs ")
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow). // Fixed height of 5 rows, enough for the status metrics.
