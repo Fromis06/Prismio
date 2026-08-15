@@ -22,13 +22,25 @@ The system was rigorously stress-tested using continuous transaction generations
 - **Data Bitrate:** Equivalent to **~20 MB/s** data throughput (calculated based on an average ~0.5KB JSON payload size per database event).
 - **Latency Reduction:** The adaptive engine successfully cuts **Data Propagation Delay** by **~60%** during low-traffic periods and sudden data stream shifts compared to traditional static configurations.
 
+### Benchmark Matrix
+
+The following matrix compares Prismio's throughput in local and Internet-based
+environments. Values represent measured throughput in events per second (EPS)
+
+| Environment | No spike | Scattered events<br>`< 100k event` | Medium load<br>`1M event` | Heavy load<br>`10M event` |
+| --- | ---: | ---: | ---: | ---: |
+| Local | TBD | TBD | TBD | TBD |
+| Internet | TBD | TBD | TBD | TBD |
+
 ---
 
 ## Deep Dive into Technical Innovations
 
 ### 1. Adaptive Dynamic Batching Engine
 
-While standard streaming engines typically rely on pre-configured batch parameters at runtime, Prismio introduces an adaptive approach by continuously monitoring data velocity in real-time.
+Instead of committing to one fixed batch size, Prismio behaves like someone balancing a stick. It takes a small step to one side, watches whether the pipeline performs better, and keeps moving in that direction when it does. If performance gets worse, it steps back and tries the other side. After repeated flushes, the system gradually settles near the batch size that keeps the pipeline balanced.
+  
+  ![alt text](https://files.catbox.moe/17k9ez.gif)
 
 - **High Traffic:** Automatically expands the batch size to maximize throughput.
 
@@ -48,7 +60,8 @@ To achieve high resilience without heavy cluster dependencies, a proprietary ove
 
 - **Core Engine:** Golang (leveraging native Go concurrency primitives)
 - **Source Database:** PostgreSQL (logical replication via `pglogrepl`)
-- **Interface:** Terminal UI (`tview`), with a built-in HTTP endpoint for live config updates and pprof profiling
+- **Interface:** Terminal UI (`tview`)
+- **Database drivers:** PostgreSQL is currently supported for both CDC sources and destinations. Additional drivers can be added in the future through the driver registry.
 
 ---
 
@@ -95,9 +108,15 @@ CREATE PUBLICATION my_pub FOR TABLE table1, table2;
 ALTER TABLE table1 REPLICA IDENTITY FULL;
 ```
 
-The replication slot (`my_slot` in the sample URL below) is created automatically on first run — you don't need to create it manually.
+Create the logical replication slot used by Prismio:
 
-On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas.
+```sql
+SELECT pg_create_logical_replication_slot('my_slot', 'pgoutput');
+```
+
+The slot (`my_slot` in the sample URL below) can also be created automatically by Prismio on first run if it does not already exist. The connecting user must have replication privileges and permission to create the slot.
+
+On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables. Destination tables should have matching primary keys so that INSERT upserts and UPDATE/DELETE statements can be applied correctly.
 
 ### 3. First run — create an account
 
@@ -107,7 +126,7 @@ On the first `go run main.go`, if `accounts.yaml` doesn't exist yet, it will be 
 2. Prismio generates an API key — **copy and save it**, since it is only shown once.
 3. Return to the login screen and log in with the username and API key you just created.
 
-Each account has its own operational config (`configs/<username>.yaml`) and its own checkpoint directory (`local_checkpoints/<username>/`), fully isolated from other accounts.
+Each account has its own operational config (`configs/<username>.yaml`) and its own checkpoint directory (`local_checkpoints/<username>/`), fully isolated from other accounts. The shared `accounts.yaml` stores account authentication data, while operational settings are stored in the per-account configuration file. Keep the generated API key safe: it is displayed only once.
 
 ### 4. Configure source and destinations in the TUI
 
@@ -126,15 +145,53 @@ After logging in, you'll land on the configuration screen:
 
 Performance parameters (Worker Count, Batch Size, Batch Timeout, etc.) can be edited directly in the same configuration table before running.
 
-### 5. Remote / multi-node deployment (optional)
+### 5. Configuration reference
+
+The following values are initialized with these defaults. Values that control channel or pipeline creation are read during startup and require a restart to take effect.
+
+| Parameter | Meaning |
+| --- | --- |
+| Feedback Interval | Interval in seconds between PostgreSQL standby-status feedback messages. Default: `10`. |
+| Pipeline Max Size | Capacity of the central event channel. Default: `1000`. |
+| Bag Max Size | Standard number of events collected before processing. Default: `10,000`. |
+| Bag Max Multiple | Maximum bag-size multiplier used during bursts. Default: `5`. |
+| Data Processing Worker Count | Number of concurrent workers that decode events and build SQL statements. Default: `10`. |
+| Batch Max Size | Maximum number of SQL statements written in one flush batch. Default: `5,000`. |
+| Batch Timeout | Maximum wait before flushing an incomplete batch, in milliseconds. Default: `200`. |
+| Flush Timeout | Maximum duration of one database flush, in milliseconds. Default: `120,000`. |
+| Max Retries | Maximum number of retries for failed connections or operations. Default: `3`. |
+| Base Retry Delay | Initial retry delay, in milliseconds. Default: `2,000`. |
+| Max Retry Delay | Maximum retry delay, in milliseconds. Default: `30,000`. |
+| Monitor Interval | Interval between monitoring log updates, in seconds. Default: `5`. |
+
+### 6. Remote / multi-node deployment (optional)
 
 1. **Network setup:** Join all nodes into the same virtual private network using [Tailscale](https://tailscale.com/kb/1017/install) or [ZeroTier](https://docs.zerotier.com/getting-started/).
 2. **PostgreSQL remote access:**
    - Configure `postgresql.conf` (`listen_addresses = '*'`) and `pg_hba.conf` to allow remote connections and replication slots. See the [Postgres client authentication guide](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html).
    - Enable logical replication on the source DB following the [official Postgres replication setup guide](https://www.postgresql.org/docs/current/logical-replication-config.html).
 
+### 7. Advanced Auto-Tuner Configuration
+
+The following settings control the automatic tuning behavior. They are intended for advanced users who need to adjust Prismio for a specific workload.
+
+| Parameter | Meaning |
+| --- | --- |
+| Tuning Mode | `manual` keeps user-configured values fixed. `automatic` enables runtime tuning. Default: `manual`. |
+| RAM Ceiling | RAM usage percentage at which the tuner enters throttling mode and reduces the batch size. Default: `95%`. |
+| RAM Safe Resume | RAM usage must fall below this percentage before normal probing resumes. Default: `85%`. |
+| Backlog High Watermark | Backlog duration, in seconds, above which the tuner adds a worker. Default: `1.5`. |
+| Backlog Low Watermark | Backlog duration, in seconds, below which the tuner removes a worker, down to the minimum. Default: `0.1`. |
+| Minimum Workers | Lowest number of data-processing workers. Default: `1`. |
+| Minimum Batch Timeout | Lower bound for the automatically calculated batch timeout. Default: `20 ms`. |
+| Maximum Batch Timeout | Upper bound for the automatically calculated batch timeout. Default: `5,000 ms`. |
+| Timeout Margin Factor | Safety multiplier applied to the estimated time needed to fill a batch. Default: `1.3`. |
+| Idle Stale Factor | Number of tuner intervals without a flush before the system is treated as idle. Default: `2`. |
+
 ---
 
 ## Notes
 
-This is currently a learning/experimental project. Local-only connections are assumed, and security hardening (TLS enforcement, secrets management, etc.) is intentionally deprioritized in favor of architectural clarity and extensibility.
+This is currently a learning/experimental project. Security hardening such as TLS enforcement and secrets management is not enabled by default. Prometheus metrics and the remote HTTP configuration endpoint are not currently active. Prismio does not create destination schemas or tables, so those must be prepared in advance. Long periods of RAM pressure may interrupt replication feedback while WAL intake is paused.
+
+The examples and benchmark figures in this README are illustrative and may not represent the system's behavior with complete accuracy. Use them as general references rather than guaranteed results.
