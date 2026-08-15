@@ -13,22 +13,9 @@ import (
 	"my-cdc/internal/config"
 )
 
-// ConfigHandler handles HTTP requests for viewing and live-updating application
-// configuration.
-//
-// STATUS: NOT called/started anywhere in the app currently — see
-// internal/utils/monitor.go, the "DISABLED: remote HTTP server" block. Kept
-// as-is (not deleted) because this is reserve infrastructure for the future
-// use case of CDC running on a different machine from the admin, which will
-// need a way to push configuration changes remotely. This file still compiles
-// normally (Go doesn't error on unused functions/types, only on unused
-// imports/variables), so it's safe to keep "waiting" without affecting the
-// current build or runtime.
-//
-// When re-enabling it, check the 4 points noted in StartAdaptiveMonitor's
-// comment (internal/utils/monitor.go), especially separating pprof from this
-// route and re-checking the auth mechanism to match accounts.yaml /
-// configs/<username>.yaml.
+// ConfigHandler handles HTTP requests for viewing and updating application
+// configuration. The remote HTTP server is currently disabled; review the
+// monitor startup path and authentication configuration before re-enabling it.
 type ConfigHandler struct {
 	AppConfig *config.AppConfig
 }
@@ -133,22 +120,15 @@ func (h *ConfigHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// HashAPIKey hashes an API key string using SHA-256 and returns its hex representation.
-//
-// NOTE: this function is still ACTIVELY used elsewhere (cmd/cli/run.go — for
-// TUI login authentication and creating new accounts), independent of
-// whether ConfigHandler is enabled or not.
+// HashAPIKey hashes an API key using SHA-256 and returns its hexadecimal form.
 func HashAPIKey(key string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-// GenerateNewAPIKey creates a cryptographically secure random API key and its SHA-256 hash.
-// It returns the raw key (for the user), the hex-encoded hashed key (for storage), and any error.
-//
-// NOTE: also used for creating new users in the TUI, independent of
-// ConfigHandler.
+// GenerateNewAPIKey creates a cryptographically secure random API key and its
+// SHA-256 hash. It returns the raw key, the stored hash, and any error.
 func GenerateNewAPIKey() (rawKey string, hashedKey string, err error) {
 	randomBytes := make([]byte, 32)
 	if _, err := rand.Read(randomBytes); err != nil {

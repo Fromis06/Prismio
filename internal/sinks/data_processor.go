@@ -29,7 +29,7 @@ import (
 // collectorLoop has typically already finished building batch N+1 and is
 // waiting to hand it off (building SQL is far cheaper than a network round
 // trip). If collectorLoop tries to hand off batch N+2 before flusherLoop
-// has drained N+1, the send on readyChan blocks — this IS the desired
+// has drained N+1, the send on readyChan blocks; this is the desired
 // backpressure, propagating naturally up into EventChan / the bag pool,
 // exactly like a full BatchMaxSize used to. Memory usage is therefore capped
 // at "at most flushPipelineDepth+1 batches in flight" regardless of traffic
@@ -57,7 +57,7 @@ type readyBatch struct {
 //     and cuts batches according to BatchMaxSize/BatchTimeout. It NEVER
 //     blocks on network I/O — cutting a batch just hands it off through
 //     readyChan and immediately continues gathering the next one.
-//   - flusherLoop: the ONLY goroutine that talks to the destination. It pulls
+//   - flusherLoop: the only goroutine that talks to the destination. It pulls
 //     ready batches one at a time and executes them, updating FlushProbe /
 //     BatchMaxSize / the checkpoint after each one.
 //
@@ -174,13 +174,12 @@ func (dp *DataProcessor) collectorLoop() {
 	// currentQueries/currentArgs, which collectorLoop keeps mutating right
 	// after this call — sharing would race with flusherLoop reading it) and
 	// hands it off through readyChan. The send blocking when flusherLoop is
-	// still busy with a previous batch IS the intended backpressure — it
+	// still busy with a previous batch is the intended backpressure — it
 	// naturally propagates up into EventChan / the bag pool, the same way a
 	// full BatchMaxSize used to.
 	enqueue := func(n int64, reason string) {
 		if n <= 0 || int64(len(currentQueries)) < n {
-			// Vẫn cần cập nhật checkpoint nếu batch hoàn toàn rỗng nhưng có dummy events.
-			// Still need to update checkpoint if the batch is completely empty but has dummy events.
+			// Update the checkpoint even when the batch is empty but contains dummy events.
 			if len(currentQueries) == 0 && currentLastCheckpoint > 0 {
 				dp.GlobalState.UpdateCheckpoint(dp.Name, currentLastCheckpoint)
 				currentLastCheckpoint = 0
@@ -313,7 +312,7 @@ func (dp *DataProcessor) collectorLoop() {
 	}
 }
 
-// flusherLoop is the ONLY goroutine per DataProcessor that talks to the
+// flusherLoop is the only goroutine per DataProcessor that talks to the
 // destination. It drains readyChan strictly in order — one batch at a time,
 // never concurrently — so checkpoints always commit in the order events
 // actually occurred, and FlushProbe only ever sees one clean, sequential

@@ -551,7 +551,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	}
 
 	// showAddSinkTypeDropdown displays a dropdown listing all registered sinks.
-	// This is now the ONLY way any destination — including the first one — is
+	// This is now the only way any destination, including the first one, is
 	// created; there is no more Type-less "destination 1" seeded from default config.
 	showAddSinkTypeDropdown = func() {
 		driverList := sinks.ListRegistered()
