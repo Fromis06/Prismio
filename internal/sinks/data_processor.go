@@ -38,7 +38,7 @@ import (
 // Raising this value trades a bit more memory for tolerance of gathering
 // jitter — but it should not be raised without also keeping flusherLoop
 // concurrency at exactly 1 (see flusherLoop doc-comment for why).
-const flushPipelineDepth = 1
+const flushPipelineDepth = 3
 
 // readyBatch is a fully-built batch of SQL statements, ready to be executed.
 // It is the unit handed off from collectorLoop to flusherLoop over readyChan.
@@ -352,16 +352,21 @@ func (dp *DataProcessor) flusherLoop() {
 				dp.GlobalState.UpdateCheckpoint(dp.Name, rb.checkpoint)
 			}
 
-			var nextTarget int64
-			switch rb.reason {
-			case "Batch full":
-				nextTarget = dp.GlobalState.Probe.RecordFullFlush(n)
-			case "Timeout":
-				nextTarget = dp.GlobalState.Probe.RecordTimeoutFlush(n)
-			default:
-				nextTarget = dp.Config.Batch.BatchMaxSize.Load()
+			// Batch-size probing is an AutoTuner responsibility even though it
+			// runs on each flush. Manual mode must not feed the probe or write a
+			// new target back to the user-configured batch size.
+			if dp.Config.Tuning.IsAutomatic() {
+				var nextTarget int64
+				switch rb.reason {
+				case "Batch full":
+					nextTarget = dp.GlobalState.Probe.RecordFullFlush(n)
+				case "Timeout":
+					nextTarget = dp.GlobalState.Probe.RecordTimeoutFlush(n)
+				default:
+					nextTarget = dp.Config.Batch.BatchMaxSize.Load()
+				}
+				dp.Config.Batch.BatchMaxSize.Store(nextTarget)
 			}
-			dp.Config.Batch.BatchMaxSize.Store(nextTarget)
 		}
 
 		// Diagnostic logging: raw vs smoothed eps and current vs stable

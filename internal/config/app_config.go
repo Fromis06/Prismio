@@ -121,6 +121,18 @@ type TuningConfig struct {
 	Mode string `json:"mode" yaml:"mode"`
 }
 
+const (
+	TuningModeManual    = "manual"
+	TuningModeAutomatic = "automatic"
+)
+
+// IsAutomatic is the single gate for every runtime tuning mutation. Unknown
+// or missing modes fail closed to Manual so a malformed configuration cannot
+// silently rewrite values selected by the user.
+func (c TuningConfig) IsAutomatic() bool {
+	return c.Mode == TuningModeAutomatic
+}
+
 // CheckpointSaveDestination defines where checkpoint files are stored.
 type CheckpointSaveDestination struct {
 	Path string `json:"path"` // Path to the directory containing checkpoint files.
@@ -181,7 +193,7 @@ func NewDefaultConfig() *AppConfig {
 	// still a placeholder today, so starting the CDC without ever touching
 	// the mode should not risk having something silently rewrite the user's
 	// config. Switch to "automatic" explicitly in the config UI once wanted.
-	cfg.Tuning.Mode = "manual"
+	cfg.Tuning.Mode = TuningModeManual
 
 	// Hash a default API key. This key must be changed in production environments.
 	cfg.Monitor.HashedAPIKeys = make(map[string]string)

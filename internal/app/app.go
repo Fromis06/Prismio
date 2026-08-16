@@ -52,7 +52,7 @@ func Bootstrap(ctx context.Context, cfg *config.AppConfig) (*Application, error)
 	models.InitBagPool(poolCapacity)
 
 	eventsCount := &models.EventsCount{}
-	globalState := models.NewGlobalState()
+	globalState := models.NewGlobalState(cfg.Batch.BatchMaxSize.Load())
 
 	// Ensure the checkpoint directory exists on startup, independent of whether there's
 	// data to save yet. SaveProviderCheckpoint is only called after a transaction

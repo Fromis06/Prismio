@@ -40,12 +40,14 @@ type GlobalState struct {
 	ramThrottled atomic.Bool
 }
 
-// NewGlobalState initializes a new GlobalState.
+// NewGlobalState initializes a new GlobalState. The probe starts from the
+// batch size selected by the user, rather than a fixed minimum, so enabling
+// automatic tuning never begins from an unrelated value.
 const defaultFlushHistoryCap = 500
 
-func NewGlobalState() *GlobalState {
+func NewGlobalState(initialBatchSize int64) *GlobalState {
 	return &GlobalState{ // Starts from the lowest level, then climbs up automatically
-		Probe: NewFlushProbe(SafeMinBatch, SafeMaxBatch, SafeMinBatch),
+		Probe: NewFlushProbe(SafeMinBatch, SafeMaxBatch, initialBatchSize),
 	}
 }
 

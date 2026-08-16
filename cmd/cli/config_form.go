@@ -665,7 +665,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		if locked {
 			return
 		}
-		cfg.Tuning.Mode = "manual"
+		cfg.Tuning.Mode = config.TuningModeManual
 		persist()
 		updateModeButtons()
 		statusView.SetText("[green]Mode: Manual — AutoTuner will be locked while CDC runs[-]")
@@ -676,7 +676,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		if locked {
 			return
 		}
-		cfg.Tuning.Mode = "automatic"
+		cfg.Tuning.Mode = config.TuningModeAutomatic
 		persist()
 		updateModeButtons()
 		statusView.SetText("[green]Mode: Automatic — AutoTuner will be activated while CDC runs[-]")
@@ -685,14 +685,14 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 	updateModeButtons = func() {
 		if btn := buttonBar.GetButton(manualBtnIdx); btn != nil {
-			if cfg.Tuning.Mode == "automatic" {
+			if cfg.Tuning.IsAutomatic() {
 				btn.SetLabel("○ Manual")
 			} else {
 				btn.SetLabel("● Manual")
 			}
 		}
 		if btn := buttonBar.GetButton(autoBtnIdx); btn != nil {
-			if cfg.Tuning.Mode == "automatic" {
+			if cfg.Tuning.IsAutomatic() {
 				btn.SetLabel("● Automatic")
 			} else {
 				btn.SetLabel("○ Automatic")

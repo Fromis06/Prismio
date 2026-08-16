@@ -90,6 +90,13 @@ func (at *AutoTuner) runLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
+		// Start is normally called only in Automatic mode, but keep this
+		// guard at the mutation boundary as well. It protects the configured
+		// values if the mode changes through a future runtime control path.
+		if !at.Config.Tuning.IsAutomatic() {
+			continue
+		}
+
 		at.checkRAMGuard()
 		at.tuneWorkerCount()
 		at.tuneTimeout()

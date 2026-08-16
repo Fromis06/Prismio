@@ -167,7 +167,7 @@ func Run() {
 				//     unchanged ("locked") for the entire lifetime of this run.
 				//   - "automatic": AutoTuner.Start() is called, and the
 				//     real-time-tunable variables may be adjusted by AutoTuner while running.
-				if newApp.Config.Tuning.Mode == "automatic" {
+				if newApp.Config.Tuning.IsAutomatic() {
 					newApp.AutoTuner.Start()
 					slog.Info("AUTO-TUNER: Running in Automatic mode")
 				} else {

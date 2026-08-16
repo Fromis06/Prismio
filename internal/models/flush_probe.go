@@ -87,10 +87,10 @@ const (
 
 	// minConsecutiveUnderfill prevents a single noisy timeout from shrinking
 	// the batch size.
-	minConsecutiveUnderfill = 3
+	minConsecutiveUnderfill = 5
 
 	SafeMinBatch int64 = 200
-	SafeMaxBatch int64 = 100_000
+	SafeMaxBatch int64 = 200000
 
 	// RAMEmergencyMinBatch is the minimum batch size used during RAM
 	// throttling. Keeping it above the normal floor avoids excessive per-flush
@@ -99,6 +99,7 @@ const (
 )
 
 func NewFlushProbe(minBatch, maxBatch, initialBatch int64) *FlushProbe {
+	initialBatch = clamp64(initialBatch, minBatch, maxBatch)
 	return &FlushProbe{
 		history:   make([]probeRecord, probeHistoryCap),
 		cap:       probeHistoryCap,
