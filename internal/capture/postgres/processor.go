@@ -10,21 +10,17 @@ import (
 	"github.com/jackc/pglogrepl"
 )
 
-// sourceTypeName is this driver's identifier name, matching DBConnection.Type
-// in the config ("postgres") and the name registered via capture.Register() in init.go.
-// A new source driver (e.g., internal/capture/mysql) will declare its own similar
-// constant in its own file, without needing to modify anything here.
+// sourceTypeName matches this driver's config and registry name.
 const sourceTypeName = "postgres"
 
-// Processor is responsible for parsing raw WAL packets,
-// converting them into a standardized ChangeEvent structure, and grouping them into a "bag".
+// Processor turns WAL packets into event bags.
 type Processor struct {
 	Config     *config.AppConfig
 	TargetSink sinks.Pipeline
 	Counts     *models.EventsCount
 
-	relations map[uint32]*pglogrepl.RelationMessage // Cache containing table metadata (column names, data types).
-	bag       []*pb.ChangeEvent                     // Temporary "bag" to collect events before sending for processing.
+	relations map[uint32]*pglogrepl.RelationMessage // Table metadata by relation id.
+	bag       []*pb.ChangeEvent                     // Events waiting to be sent.
 }
 
 func NewProcessor(cfg *config.AppConfig, targetSink sinks.Pipeline, counts *models.EventsCount) *Processor {
@@ -34,12 +30,12 @@ func NewProcessor(cfg *config.AppConfig, targetSink sinks.Pipeline, counts *mode
 		Counts:     counts,
 		relations:  make(map[uint32]*pglogrepl.RelationMessage),
 
-		// Initialize bag with an empty slice from the pool.
+		// Reuse a pooled event slice.
 		bag: models.ChangeEventBagPool.Get().([]*pb.ChangeEvent)[:0],
 	}
 }
 
-// ProcessRawBytes is the main function that receives raw WAL data and the current LSN.
+// ProcessRawBytes handles one WAL packet.
 func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 	logicalMsg, err := pglogrepl.Parse(walData)
 	if err != nil {
@@ -49,12 +45,11 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 
 	switch event := logicalMsg.(type) {
 	case *pglogrepl.RelationMessage:
-		// This packet contains information about the structure of a table.
-		// We need to save it to later map data with the corresponding column names.
+		// Keep table metadata for later rows.
 		p.relations[event.RelationID] = event
 
 	case *pglogrepl.BeginMessage:
-		// Ignore BeginMessage, no processing needed.
+		// Begin has no event data.
 
 	case *pglogrepl.InsertMessage, *pglogrepl.UpdateMessage, *pglogrepl.DeleteMessage:
 		var action pb.Action
@@ -76,7 +71,7 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 
 		rel, ok := p.relations[relID]
 		if !ok {
-			// If there is no information about this table in the cache, skip the event.
+			// Can't map columns without metadata.
 			slog.Warn("Metadata not found for relation, skipping event", "relation_id", relID)
 			return
 		}
@@ -96,7 +91,7 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 			afterMap = p.decodeTupleToMap(rel, newTuple)
 		}
 
-		// Create a standardized event (ChangeEvent).
+		// Build the shared event shape.
 		changeEvent := models.BuildChangeEvent(
 			sourceTypeName,
 			action,
@@ -114,21 +109,21 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 		multiplier := p.Config.Bag.BagMaxMultiple.Load()
 		maxAllowedLimit := standardSize * int64(multiplier)
 
-		// If the bag is full, send it for processing and get a new bag from the pool.
+		// Send a full bag and reuse another slice.
 		if int64(len(p.bag)) >= maxAllowedLimit {
 			p.TargetSink.WriteBatch(p.bag)
 			p.bag = models.ChangeEventBagPool.Get().([]*pb.ChangeEvent)[:0]
 		}
 
 	case *pglogrepl.CommitMessage:
-		// Must use TransactionEndLSN. Postgres will not advance the Checkpoint if only CommitLSN is confirmed.
+		// Use TransactionEndLSN or Postgres won't move the checkpoint.
 		commitLSN := uint64(event.TransactionEndLSN)
 
 		if len(p.bag) > 0 {
-			// Update the checkpoint of the last event in the bag with the commit's LSN.
+			// Commit belongs on the last event.
 			p.bag[len(p.bag)-1].Offset = &pb.Checkpoint{Offset: &pb.Checkpoint_Lsn{Lsn: commitLSN}}
 		} else {
-			// If the bag is empty, create a dummy event just to carry the checkpoint information.
+			// Keep a commit-only checkpoint too.
 			p.bag = append(p.bag, models.BuildChangeEvent(
 				sourceTypeName,
 				pb.Action_COMMIT,
@@ -141,7 +136,7 @@ func (p *Processor) ProcessRawBytes(walData []byte, currentLSN pglogrepl.LSN) {
 	}
 }
 
-// decodeTupleToMap converts raw data from pglogrepl.TupleData into a map[string]any.
+// decodeTupleToMap maps tuple values to column names.
 func (p *Processor) decodeTupleToMap(rel *pglogrepl.RelationMessage, tuple *pglogrepl.TupleData) map[string]any {
 	if tuple == nil {
 		return nil
@@ -149,7 +144,7 @@ func (p *Processor) decodeTupleToMap(rel *pglogrepl.RelationMessage, tuple *pglo
 
 	result := make(map[string]any, len(tuple.Columns))
 
-	// Ensure no out-of-bounds error if the table structure is skewed.
+	// Be safe if tuple and relation are out of sync.
 	numCols := len(tuple.Columns)
 	if len(rel.Columns) < numCols {
 		numCols = len(rel.Columns)
@@ -164,13 +159,11 @@ func (p *Processor) decodeTupleToMap(rel *pglogrepl.RelationMessage, tuple *pglo
 		case 'n': // 'n' = Null
 			result[colName] = nil
 
-		case 'u': // 'u' = Unchanged (Unchanged TOASTed data, e.g., oversized strings)
-			// Skip unchanged columns (usually TOASTed data).
+		case 'u': // Unchanged TOAST value.
 			continue
 
-		case 't', 'b': // 't' = Text format, 'b' = Binary format
-			// pgoutput sends data in text format by default.
-			// TODO: Based on colMeta.DataType (OID), perform accurate type casting (int, float, bool, etc.).
+		case 't', 'b': // Text or binary payload.
+			// pgoutput is text by default; type casting can come later.
 			result[colName] = string(colData.Data)
 		}
 	}

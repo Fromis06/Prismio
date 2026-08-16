@@ -13,35 +13,11 @@ import (
 	"my-cdc/internal/utils"
 )
 
-// flushPipelineDepth is the capacity of readyChan — the number of fully-built
-// batches allowed to sit "ready to flush" at once between collectorLoop and
-// flusherLoop.
-//
-// Kept deliberately small (classic double buffer): while flusherLoop is
-// blocked on network RTT executing one readyBatch, collectorLoop keeps
-// gathering events and building the NEXT batch instead of sitting idle
-// waiting for the flush to return (which was the previous architecture's
-// core problem — a single goroutine did both, so RTT directly stalled event
-// gathering, preventing batch size from ever growing large enough to
-// amortize a high-RTT destination).
-//
-// A depth of 1 is enough: by the time flusherLoop finishes flushing batch N,
-// collectorLoop has typically already finished building batch N+1 and is
-// waiting to hand it off (building SQL is far cheaper than a network round
-// trip). If collectorLoop tries to hand off batch N+2 before flusherLoop
-// has drained N+1, the send on readyChan blocks; this is the desired
-// backpressure, propagating naturally up into EventChan / the bag pool,
-// exactly like a full BatchMaxSize used to. Memory usage is therefore capped
-// at "at most flushPipelineDepth+1 batches in flight" regardless of traffic
-// level, instead of growing unbounded if the destination falls behind.
-//
-// Raising this value trades a bit more memory for tolerance of gathering
-// jitter — but it should not be raised without also keeping flusherLoop
-// concurrency at exactly 1 (see flusherLoop doc-comment for why).
-const flushPipelineDepth = 1
+// flushPipelineDepth gives the collector a small head start while a batch
+// is flushing. Keep it low so backpressure still bounds memory.
+const flushPipelineDepth = 3
 
-// readyBatch is a fully-built batch of SQL statements, ready to be executed.
-// It is the unit handed off from collectorLoop to flusherLoop over readyChan.
+// readyBatch is passed from collecting to flushing.
 type readyBatch struct {
 	queries    []string
 	args       [][]any
@@ -49,23 +25,7 @@ type readyBatch struct {
 	checkpoint uint64 // 0 means "no checkpoint to commit with this flush"
 }
 
-// DataProcessor manages the entire data processing flow for a specific destination.
-//
-// Architecture: "1 gather – 1 flush" double-buffer pipeline.
-//   - collectorLoop: receives events from EventChan, builds SQL (still
-//     fanned out across DataProcessingWorkerCount goroutines like before),
-//     and cuts batches according to BatchMaxSize/BatchTimeout. It NEVER
-//     blocks on network I/O — cutting a batch just hands it off through
-//     readyChan and immediately continues gathering the next one.
-//   - flusherLoop: the only goroutine that talks to the destination. It pulls
-//     ready batches one at a time and executes them, updating FlushProbe /
-//     BatchMaxSize / the checkpoint after each one.
-//
-// Exactly one flusherLoop must run per DataProcessor — running several in
-// parallel would let checkpoints commit out of the order events actually
-// occurred in (a later LSN could finish before an earlier one that's
-// retrying), and would feed FlushProbe overlapping/interleaved eps samples,
-// breaking the single-stable-signal assumption the P&O algorithm depends on.
+// DataProcessor collects events and flushes them in order for one destination.
 type DataProcessor struct {
 	Name          string                      // Identifier for the Sink.
 	Config        *config.AppConfig           // Application configuration.
@@ -100,26 +60,22 @@ func NewDataProcessor(name string, cfg *config.AppConfig, builder QueryBuilder, 
 	return dp
 }
 
-// WriteBatch is a method of the Pipeline interface. It is used in a
-// one-to-one scenario (1 producer -> 1 consumer). It will automatically package the event bag with
-// a reference count of 1 and send it to the processing channel.
+// WriteBatch wraps events for this single consumer.
 func (dp *DataProcessor) WriteBatch(events []*pb.ChangeEvent) error { // Implements Pipeline interface
 	if len(events) > 0 {
-		// Automatically package with a reference count of 1, as this is the only consumer.
+		// Only this processor owns this bag.
 		dp.WriteShared(models.NewSharedEventBag(events, 1))
 	}
 	return nil
 }
 
-// WriteShared is the method called by MultiSink to send a packaged event bag
-// (with a reference counter) to the processing channel.
+// WriteShared receives a bag from MultiSink.
 func (dp *DataProcessor) WriteShared(bag *models.SharedEventBag) {
 	dp.pendingEvents.Add(int64(len(bag.Events)))
 	dp.EventChan <- bag
 }
 
-// Start launches both halves of the pipeline: collectorLoop (gathers/builds)
-// and flusherLoop (executes against the destination).
+// Start the collector and single flusher.
 func (dp *DataProcessor) Start() error {
 	dp.wg.Add(2)
 	go dp.collectorLoop()
@@ -128,17 +84,17 @@ func (dp *DataProcessor) Start() error {
 }
 
 func (dp *DataProcessor) Stop() error {
-	dp.cancel()        // Cancel the context, signaling child operations (like flush) to stop.
-	close(dp.stopChan) // Send a stop signal to collectorLoop.
-	dp.wg.Wait()       // Wait for collectorLoop (flushes remainder, closes readyChan) AND flusherLoop (drains readyChan until closed).
+	dp.cancel()        // Stop in-flight work.
+	close(dp.stopChan) // Tell collector to finish.
+	dp.wg.Wait()       // Collector flushes, flusher drains.
 
-	// Flush any remaining event bags in the channel to avoid memory leaks.
+	// Release bags that never got processed.
 	close(dp.EventChan)
 	for sharedBag := range dp.EventChan {
-		sharedBag.Done() // Call Done() to decrement the refCount and possibly return the bag to the pool.
+		sharedBag.Done() // Return it when no consumer remains.
 	}
 
-	return dp.Executor.Close() // Finally, close the physical connection.
+	return dp.Executor.Close() // Then close the database connection.
 }
 
 // IsActive returns the operational state of the DataProcessor.
@@ -352,16 +308,21 @@ func (dp *DataProcessor) flusherLoop() {
 				dp.GlobalState.UpdateCheckpoint(dp.Name, rb.checkpoint)
 			}
 
-			var nextTarget int64
-			switch rb.reason {
-			case "Batch full":
-				nextTarget = dp.GlobalState.Probe.RecordFullFlush(n)
-			case "Timeout":
-				nextTarget = dp.GlobalState.Probe.RecordTimeoutFlush(n)
-			default:
-				nextTarget = dp.Config.Batch.BatchMaxSize.Load()
+			// Batch-size probing is an AutoTuner responsibility even though it
+			// runs on each flush. Manual mode must not feed the probe or write a
+			// new target back to the user-configured batch size.
+			if dp.Config.Tuning.IsAutomatic() {
+				var nextTarget int64
+				switch rb.reason {
+				case "Batch full":
+					nextTarget = dp.GlobalState.Probe.RecordFullFlush(n)
+				case "Timeout":
+					nextTarget = dp.GlobalState.Probe.RecordTimeoutFlush(n)
+				default:
+					nextTarget = dp.Config.Batch.BatchMaxSize.Load()
+				}
+				dp.Config.Batch.BatchMaxSize.Store(nextTarget)
 			}
-			dp.Config.Batch.BatchMaxSize.Store(nextTarget)
 		}
 
 		// Diagnostic logging: raw vs smoothed eps and current vs stable

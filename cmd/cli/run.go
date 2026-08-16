@@ -20,14 +20,13 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/rivo/tview"
 
-	// Import drivers to ensure they are registered. This makes them available
-	// to the application's factory functions.
+	// Register the built-in drivers.
 	_ "my-cdc/internal/drivers"
 )
 
 const (
-	accountsPath = "accounts.yaml" // SHARED accounts file, read before login to authenticate users.
-	configsDir   = "configs"       // Directory for PER-ACCOUNT operational configs: configs/<username>.yaml
+	accountsPath = "accounts.yaml" // Shared account list, needed before login.
+	configsDir   = "configs"       // Per-account config lives in configs/<username>.yaml.
 )
 
 func Run() {
@@ -36,16 +35,11 @@ func Run() {
 	tuiApp := tview.NewApplication()
 	pages := tview.NewPages()
 
-	// The Dashboard must be created BEFORE initializing the logger.
-	// The logger needs a writer from the dashboard (dashboard.LogWriter()) to pipe logs
-	// into the TUI log panel. If initialized first, logs would go to os.Stdout,
-	// corrupting the tview display.
+	// Logger writes into this panel, so build it first.
 	dashboard := NewDashboard(tuiApp)
 	logger.Initialize(dashboard.LogWriter())
 
-	// Load the shared accounts file. This is the only data needed before login,
-	// as it's required to authenticate the user and determine which per-account
-	// configuration file (configs/<username>.yaml) to load next.
+	// Accounts are enough for login; the rest loads after it.
 	accounts, err := config.LoadAccounts(accountsPath)
 	if err != nil {
 		absPath, _ := filepath.Abs(accountsPath)
@@ -58,15 +52,7 @@ func Run() {
 
 	var cdcAppRef atomic.Pointer[app.Application]
 
-	// listenerDone holds a channel that is closed when the Listener's goroutine
-	// actually returns. The shutdown path needs to WAIT on this channel before
-	// flushing sinks / saving the checkpoint — otherwise, MultiSink.Stop() and
-	// Shutdown() could run while the Listener is still pushing new events into
-	// the pipeline, leading to data loss or the checkpoint being saved "behind"
-	// the last batch that was actually written to the sink. atomic.Pointer is
-	// used because the goroutine that creates it (inside runCdcCallback) and
-	// the goroutine that reads it (the shutdown handler) run independently of
-	// each other.
+	// Shutdown waits for the listener before flushing and saving the checkpoint.
 	var listenerDone atomic.Pointer[chan struct{}]
 
 	var configFormLock func()
@@ -78,7 +64,7 @@ func Run() {
 			pages.HidePage("error")
 		})
 
-	// Modal for displaying bootstrap errors.
+	// Bootstrap errors go back to config.
 	bootstrapErrorModal := tview.NewModal().AddButtons([]string{"OK"})
 	bootstrapErrorModal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 		pages.SwitchToPage("config") // Return to the config page to fix the issue
@@ -90,28 +76,22 @@ func Run() {
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) { pages.HidePage("usernameExists") })
 	usernameExistsModal.SetTitle("Username Conflict")
 
-	// loadUserConfig loads (or initializes anew if not present) the operational
-	// configuration SPECIFIC to one account. Each account has its own independent
-	// Source/Consumers/Batch/Worker..., no longer sharing a single config.yaml as before.
+	// Each account gets its own config file.
 	loadUserConfig := func(username string) (*config.AppConfig, string) {
 		userConfigPath := filepath.Join(configsDir, username+".yaml")
 		cfg := config.NewDefaultConfig()
 
-		// Isolate the checkpoint directory per account to avoid LSN conflicts
-		// when switching accounts (set before ApplyTo, so the user can still override it if desired).
+		// Keep checkpoints apart when switching accounts.
 		cfg.SaveDestination.Path = filepath.Join("local_checkpoints", username)
 
-		// HashedAPIKeys, used for HTTP API (/config) authentication, still comes from
-		// the shared account table — it's not something "specific to each user", so
-		// it doesn't live in configs/<username>.yaml.
+		// API keys stay in the shared account file.
 		cfg.Monitor.HashedAPIKeys = accounts.HashedAPIKeys
 
 		if overrides, loadErr := config.LoadOverrides(userConfigPath); loadErr == nil {
 			absPath, _ := filepath.Abs(userConfigPath)
 			slog.Info("Loaded per-account configuration", "username", username, "path", absPath)
 			overrides.ApplyTo(cfg)
-			// ApplyTo doesn't touch Monitor.HashedAPIKeys (removed from OverrideConfig),
-			// so the value assigned above remains unchanged after this step.
+			// ApplyTo leaves the shared API keys alone.
 		} else {
 			absPath, _ := filepath.Abs(userConfigPath)
 			slog.Info("No dedicated configuration for this account yet, creating a new one with default values.", "username", username, "path", absPath, "error", loadErr)
@@ -126,9 +106,7 @@ func Run() {
 		return cfg, userConfigPath
 	}
 
-	// enterWorkspace is called after a successful login. It loads the user-specific
-	// configuration, rebuilds the configuration form page with that config,
-	// and switches the TUI to that page.
+	// Open the account workspace after login.
 	enterWorkspace := func(username string) {
 		cfg, userConfigPath := loadUserConfig(username)
 
@@ -142,9 +120,7 @@ func Run() {
 			}
 
 			go func() {
-				// app.Bootstrap now ensures the checkpoint directory exists on startup,
-				// even before any data is processed. This provides early feedback on
-				// permissions issues (fail-fast). See internal/app/app.go for details.
+				// Checkpoint path is checked during bootstrap.
 				newApp, bootstrapErr := app.Bootstrap(ctx, cfg)
 				if bootstrapErr != nil {
 					tuiApp.QueueUpdateDraw(func() {
@@ -159,15 +135,8 @@ func Run() {
 				newApp.MultiSink.Start()
 				go utils.StartAdaptiveMonitor(newApp.Config, newApp.EventsCount, time.Duration(newApp.Config.Monitor.MonitorIntervalSec)*time.Second)
 
-				// The AutoTuner mode selected on the config page (Manual / Automatic
-				// buttons, see cmd/cli/config_form.go) determines whether AutoTuner is
-				// allowed to run:
-				//   - "manual": AutoTuner.Start() is NOT called -> no goroutine
-				//     overwrites the values the user just configured; they stay
-				//     unchanged ("locked") for the entire lifetime of this run.
-				//   - "automatic": AutoTuner.Start() is called, and the
-				//     real-time-tunable variables may be adjusted by AutoTuner while running.
-				if newApp.Config.Tuning.Mode == "automatic" {
+				// Manual keeps the chosen values. Automatic lets the tuner change them.
+				if newApp.Config.Tuning.IsAutomatic() {
 					newApp.AutoTuner.Start()
 					slog.Info("AUTO-TUNER: Running in Automatic mode")
 				} else {
@@ -194,8 +163,7 @@ func Run() {
 		configForm, lockConfigForm := NewConfigForm(tuiApp, cfg, userConfigPath, runCdcCallback)
 		configFormLock = lockConfigForm
 
-		// Remove the previous "config" page (if any) before adding the new one
-		// to avoid having two pages with the same name in the tview.Pages manager.
+		// Replace the old config page for this account.
 		pages.RemovePage("config")
 		pages.AddPage("config", configForm, true, false)
 		pages.SwitchToPage("config")
@@ -207,7 +175,7 @@ func Run() {
 			return
 		}
 
-		// Hash the input API key and check if it exists and matches the given username.
+		// Match the key hash with its account.
 		hashedInput := api.HashAPIKey(apiKey)
 		storedUsername, exists := accounts.HashedAPIKeys[hashedInput]
 
@@ -220,15 +188,13 @@ func Run() {
 		}
 	}
 
-	// Form for creating a new user.
+	// New account form.
 	createUserForm := tview.NewForm().
 		AddInputField("Username", "", 40, nil, nil).
 		SetFieldBackgroundColor(tview.Styles.PrimitiveBackgroundColor).
 		SetFieldTextColor(tview.Styles.PrimaryTextColor)
 
-	// This callback handles the "Create" button action on the new user form.
-	// It only updates the shared accounts.yaml file. The new user's specific
-	// operational config will be auto-generated on their first login (see loadUserConfig).
+	// The account config gets created on first login.
 	createUserAndKey := func() {
 		username := createUserForm.GetFormItem(0).(*tview.InputField).GetText()
 		if username == "" {
@@ -258,7 +224,7 @@ func Run() {
 
 		slog.Info("Successfully generated and saved new account", "path", absPath, "username", username)
 
-		// Display the new key to the user.
+		// Show the key once so they can save it.
 		keyDisplayForm := tview.NewForm().
 			AddTextView("Username", username, 0, 1, true, false).
 			AddInputField("API Key (Password)", rawKey, len(rawKey)+5, nil, nil)
@@ -296,7 +262,7 @@ func Run() {
 	pages.AddPage("usernameExists", usernameExistsModal, false, false)
 	pages.AddPage("bootstrap_error", bootstrapErrorModal, false, false)
 
-	// Handle graceful shutdown on interrupt signals.
+	// Stop in order: listener, sinks, then checkpoint.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -305,23 +271,15 @@ func Run() {
 		cancel()
 
 		if runningApp := cdcAppRef.Load(); runningApp != nil {
-			// 1. Wait for the Listener to fully stop — no more new events being
-			//    pushed into the pipeline. If CDC was never "Run" (listenerDone
-			//    is still nil), skip this step.
+			// Let listener finish first; it may still be sending events.
 			if donePtr := listenerDone.Load(); donePtr != nil {
 				<-*donePtr
 			}
 
-			// 2. Flush any remaining batches still buffered in each sink. Before
-			//    this fix, this step was missing in CLI mode,
-			//    causing any batch that hadn't reached BatchMaxSize / hadn't
-			//    reached BatchTimeout to be dropped entirely on app exit,
-			//    without being written to the sink in time.
+			// Flush what is still buffered.
 			runningApp.MultiSink.Stop()
 
-			// 3. Save the final checkpoint after step 2; otherwise,
-			//    the checkpoint written to disk would be older than the batch
-			//    just flushed successfully above.
+			// Save the checkpoint after the last flush.
 			runningApp.Shutdown()
 		}
 		tuiApp.Stop()

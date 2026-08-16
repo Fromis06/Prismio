@@ -79,7 +79,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 		return err
 	}
 
-	// Get the Checkpoint loaded from disk (if any) to request Postgres to start from this exact point
+	// Resume from the last saved checkpoint when there is one.
 	startLSN := globalState.GetMinCheckpoint()
 	if startLSN > 0 {
 		slog.Info("CAPTURE: Requesting Postgres to start sending data from LSN", "lsn", startLSN)
@@ -104,12 +104,11 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 
 	for {
 		select {
-		case <-ctx.Done(): // Receive stop signal from the main context
+		case <-ctx.Done(): // App is stopping.
 			return nil
 
 		case <-ticker.C:
-			// Periodically send StandbyStatusUpdate to inform Postgres of the processed LSN,
-			// which helps Postgres clean up WAL files and avoid disk space issues.
+			// Let Postgres know what WAL has been processed.
 			confirmedLSN := globalState.GetMinCheckpoint()
 
 			if confirmedLSN > 0 {
@@ -121,8 +120,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 				})
 
 				if errUpdate == nil {
-					// At the same time, periodically save this checkpoint to disk.
-					// This prevents data loss in case the app is suddenly terminated (kill -9) without a graceful shutdown.
+					// Save it too, in case shutdown is not clean.
 					ckptData := models.CheckpointFileData{
 						InstanceName: l.Config.Provider.Source.Name,
 						SourceType:   sourceTypeName,
@@ -143,7 +141,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 			msg, err := conn.ReceiveMessage(ctxTimeout)
 			cancel()
 			if err != nil {
-				// If it's a timeout error, ignore it and continue the loop.
+				// No message yet is fine.
 				if pgconn.Timeout(err) {
 					continue
 				}
@@ -154,7 +152,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 				switch cd.Data[0] {
 				case pglogrepl.PrimaryKeepaliveMessageByteID:
 					pkm, _ := pglogrepl.ParsePrimaryKeepaliveMessage(cd.Data[1:])
-					// Postgres requests a response to check if the connection is still alive.
+					// Postgres wants a quick alive response.
 					if pkm.ReplyRequested {
 						confirmedLSN := globalState.GetMinCheckpoint()
 						if confirmedLSN == 0 {
@@ -168,20 +166,12 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 					}
 				case pglogrepl.XLogDataByteID:
 					xld, err := pglogrepl.ParseXLogData(cd.Data[1:])
-					// This is the packet containing change data (INSERT, UPDATE, DELETE...).
+					// Actual INSERT, UPDATE, DELETE data.
 					if err != nil {
 						continue
 					}
 
-					// Backpressure: if RAM pressure is high (AutoTuner's RAM
-					// guard, see internal/tuning/auto_tuner.go), pause here
-					// instead of pushing more data into the pipeline. This
-					// stalls the read loop, so we stop calling
-					// conn.ReceiveMessage — TCP flow control then holds
-					// data back at Postgres itself, instead of it piling up
-					// as unbounded backlog on our side. Unlike the old
-					// approach (cutting BatchMaxSize), this never touches
-					// flush throughput at the sink.
+					// Stop reading under RAM pressure so TCP holds data upstream.
 					if l.waitForRAMRecovery(ctx, globalState) {
 						return nil // ctx canceled while waiting
 					}
@@ -194,20 +184,8 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 	}
 }
 
-// waitForRAMRecovery blocks while the system is under RAM pressure (see
-// AutoTuner's RAM guard / GlobalState.SetRAMThrottled), polling every
-// 200ms. Returns true if ctx was canceled while waiting (caller should
-// stop), false once it's safe to continue.
-//
-// KNOWN LIMITATION: while paused here, we also stop sending
-// StandbyStatusUpdate feedback (normally sent from the ticker case in the
-// outer select loop above), since we're blocked inside this same loop
-// iteration. If the pause outlasts Postgres's replication timeout, the
-// server may drop the connection. Acceptable for now since RAM pressure is
-// expected to be transient (draining an existing backlog, not a permanently
-// under-provisioned sink); if long pauses turn out to be common in
-// practice, move status-update sending to its own goroutine/ticker
-// independent of this loop instead of patching around it here.
+// waitForRAMRecovery polls until memory pressure clears. Long pauses can
+// delay standby feedback, so Postgres may reconnect us.
 func (l *Listener) waitForRAMRecovery(ctx context.Context, globalState *models.GlobalState) bool {
 	if !globalState.IsRAMThrottled() {
 		return false

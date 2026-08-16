@@ -22,13 +22,11 @@ type configRow struct {
 	Set           func(newVal string)
 	IsAction      bool
 	OnAction      func()
-	IsCheckStatus bool               // true for "Check connection" action rows
-	StatusColor   func() tcell.Color // color for the value column, when IsCheckStatus
+	IsCheckStatus bool               // True for connection-check rows.
+	StatusColor   func() tcell.Color // Value color for a check row.
 }
 
-// checkState tracks the connectivity-check status of a single source or
-// destination row. Pointers are used so the state survives table rebuilds
-// (buildRows runs on every redraw, but these structs live outside it).
+// checkState stays around when the table rebuilds.
 type checkState struct {
 	status string // "unchecked" | "checking" | "ok" | "failed"
 	errMsg string
@@ -67,9 +65,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	locked := false
 	var rows []configRow
 
-	// Connectivity-check state, one per source and one per destination.
-	// consumerChecks is kept in sync (same length, same order) with
-	// cfg.Consumers.List at every point the list is mutated (add/delete).
+	// One check state for source and every destination.
 	sourceCheck := &checkState{status: "unchecked"}
 	consumerChecks := make([]*checkState, len(cfg.Consumers.List))
 	for i := range consumerChecks {
@@ -83,18 +79,14 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	var showAddSourceTypeDropdown func()
 	var runCheck func(cs *checkState, testFn func(ctx context.Context) error)
 
-	// persist saves the current configuration to its YAML file.
+	// Save config after edits.
 	persist := func() {
 		if saveErr := config.SaveFullConfig(configPath, cfg); saveErr != nil {
 			statusView.SetText(fmt.Sprintf("[red]Failed to save config: %v[-]", saveErr))
 		}
 	}
 
-	// runCheck runs a connectivity test asynchronously (never blocks the TUI
-	// thread), moving the row through checking (yellow) -> ok (green) or
-	// failed (red). It rebuilds the whole table on each transition instead of
-	// tracking a row index, so it stays correct even if the user adds/removes
-	// other rows while a check is in flight.
+	// Checks run away from the UI thread. Rebuild avoids stale row indexes.
 	runCheck = func(cs *checkState, testFn func(ctx context.Context) error) {
 		if cs.status == "checking" {
 			return
@@ -127,7 +119,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	buildRows = func() {
 		var newRows []configRow
 
-		// --- Data source (Source / Listener) ---
+		// Data source.
 		if cfg.Provider.Source.Type == "" {
 			newRows = append(newRows, configRow{
 				Label:    "     →  Choose data source",
@@ -187,7 +179,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			})
 		}
 
-		// --- Destinations (Sinks) ---
+		// Destinations.
 		for i := range cfg.Consumers.List {
 			idx := i
 			label := fmt.Sprintf("Destination URL %d (%s)", idx+1, cfg.Consumers.List[idx].Type)
@@ -251,10 +243,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			},
 		})
 
-		// --- Performance tuning (8 variables, all editable from the TUI) ---
-		// See TuningConfig / AutoTuner: these variables are only actually
-		// overwritten by AutoTuner when the mode is "automatic" (Manual/
-		// Automatic button in the buttonBar below the table).
+		// These values only gets changed by AutoTuner in automatic mode.
 		newRows = append(newRows,
 			configRow{
 				Label: "Worker Count",
@@ -484,9 +473,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		tuiApp.SetFocus(input)
 	}
 
-	// showAddSourceTypeDropdown displays a dropdown listing the registered Source
-	// drivers (capture.ListRegistered()). After selection, it sets Provider.Source.Type
-	// and fills in the URL from Metadata.URLTemplate, then opens that URL row for editing.
+	// Pick a source driver, then edit its default URL.
 	showAddSourceTypeDropdown = func() {
 		driverList := capture.ListRegistered()
 		if len(driverList) == 0 {
@@ -523,7 +510,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 				closeDropdown()
 				rebuildTable()
-				// The source's URL row is always row 0 after selection.
+				// Source URL is first row after picking it.
 				table.Select(0, 0)
 				startEdit(0)
 			})
@@ -550,9 +537,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		tuiApp.SetFocus(dropdown)
 	}
 
-	// showAddSinkTypeDropdown displays a dropdown listing all registered sinks.
-	// This is now the only way any destination, including the first one, is
-	// created; there is no more Type-less "destination 1" seeded from default config.
+	// Add a destination from the registered drivers.
 	showAddSinkTypeDropdown = func() {
 		driverList := sinks.ListRegistered()
 		if len(driverList) == 0 {
@@ -592,9 +577,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 				closeDropdown()
 				rebuildTable()
 
-				// Each destination occupies 3 rows (URL + Check + Delete). The number of rows
-				// before the Destinations section depends on whether a source has been chosen
-				// (1 row if not, 3 rows if chosen: URL + Check + Change).
+				// Destinations use three rows; source uses one or three.
 				sourceRowCount := 1
 				if cfg.Provider.Source.Type != "" {
 					sourceRowCount = 3
@@ -653,19 +636,14 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 	buttonBar := tview.NewForm().SetButtonsAlign(tview.AlignLeft)
 	buttonBar.AddButton("Copy selected row", copySelected)
 
-	// --- AutoTuner mode: Manual / Automatic ---
-	// Manual    -> AutoTuner.Start() is not called when running CDC (see cmd/cli/run.go);
-	//              the values entered by the user in the table above remain unchanged
-	//              for the entire run.
-	// Automatic -> AutoTuner.Start() is called, and the real-time-tunable variables
-	//              may be overwritten by AutoTuner while CDC is running.
+	// Manual holds values. Automatic can tune them while CDC runs.
 	var updateModeButtons func()
 
 	buttonBar.AddButton("Manual", func() {
 		if locked {
 			return
 		}
-		cfg.Tuning.Mode = "manual"
+		cfg.Tuning.Mode = config.TuningModeManual
 		persist()
 		updateModeButtons()
 		statusView.SetText("[green]Mode: Manual — AutoTuner will be locked while CDC runs[-]")
@@ -676,7 +654,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 		if locked {
 			return
 		}
-		cfg.Tuning.Mode = "automatic"
+		cfg.Tuning.Mode = config.TuningModeAutomatic
 		persist()
 		updateModeButtons()
 		statusView.SetText("[green]Mode: Automatic — AutoTuner will be activated while CDC runs[-]")
@@ -685,21 +663,21 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 
 	updateModeButtons = func() {
 		if btn := buttonBar.GetButton(manualBtnIdx); btn != nil {
-			if cfg.Tuning.Mode == "automatic" {
+			if cfg.Tuning.IsAutomatic() {
 				btn.SetLabel("○ Manual")
 			} else {
 				btn.SetLabel("● Manual")
 			}
 		}
 		if btn := buttonBar.GetButton(autoBtnIdx); btn != nil {
-			if cfg.Tuning.Mode == "automatic" {
+			if cfg.Tuning.IsAutomatic() {
 				btn.SetLabel("● Automatic")
 			} else {
 				btn.SetLabel("○ Automatic")
 			}
 		}
 	}
-	// Initialize the label to match the value loaded from config (default "manual").
+	// Match the loaded mode (manual by default).
 	updateModeButtons()
 
 	running := false
@@ -709,7 +687,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			return
 		}
 
-		// Condition 1: there must be a listener and at least 1 sink with a configured URL.
+		// Need a source and at least one destination.
 		if cfg.Provider.Source.Type == "" {
 			statusView.SetText("[red]No data source selected[-]")
 			return
@@ -725,7 +703,7 @@ func NewConfigForm(tuiApp *tview.Application, cfg *config.AppConfig, configPath 
 			return
 		}
 
-		// Condition 2: all sinks and the listener must pass the connection Check.
+		// All selected connections needs a successful check.
 		if sourceCheck.status != "ok" {
 			statusView.SetText("[red]Data source connection has not been checked successfully[-]")
 			return
