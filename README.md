@@ -29,8 +29,8 @@ environments. Values represent measured throughput in events per second (EPS)
 
 | Environment | No spike | Scattered events<br>`< 100k event` | Medium load<br>`1M event` | Heavy load<br>`10M event` |
 | --- | ---: | ---: | ---: | ---: |
-| Local | TBD | TBD | TBD | TBD |
-| Internet | TBD | TBD | TBD | TBD |
+| Local | BatchSize |~ 50k |~ 45k |~ 45k |
+| Internet | Batchsize |~ 45 to 50k  |~ 38 to 45k |~ 33 to 40k |
 
 ---
 
