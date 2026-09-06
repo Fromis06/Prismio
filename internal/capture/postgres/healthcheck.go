@@ -36,6 +36,7 @@ func TestConnection(ctx context.Context, sourceURL string) error {
 	// connecting, same as internal/capture/postgres/listener.go does.
 	delete(connConfig.RuntimeParams, "slot_name")
 	delete(connConfig.RuntimeParams, "publication_names")
+	connConfig.RuntimeParams["replication"] = "database"
 
 	conn, err := pgconn.ConnectConfig(ctx, connConfig)
 	if err != nil {

@@ -49,6 +49,7 @@ func (l *Listener) Start(ctx context.Context, sourceURL string, globalState *mod
 	}
 	delete(connConfig.RuntimeParams, "slot_name")
 	delete(connConfig.RuntimeParams, "publication_names")
+	connConfig.RuntimeParams["replication"] = "database"
 
 	var conn *pgconn.PgConn
 	err = utils.DoWithRetry(

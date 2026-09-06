@@ -102,10 +102,6 @@ ALTER ROLE your_user WITH REPLICATION;
 
 -- Create a publication for the tables you want to track
 CREATE PUBLICATION my_pub FOR TABLE table1, table2;
-
--- For tables that receive UPDATE/DELETE, set REPLICA IDENTITY so the
--- "before" image of the row is available
-ALTER TABLE table1 REPLICA IDENTITY FULL;
 ```
 
 Create the logical replication slot used by Prismio:
@@ -116,7 +112,14 @@ SELECT pg_create_logical_replication_slot('my_slot', 'pgoutput');
 
 The slot (`my_slot` in the sample URL below) can also be created automatically by Prismio on first run if it does not already exist. The connecting user must have replication privileges and permission to create the slot.
 
-On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables. Destination tables should have matching primary keys so that INSERT upserts and UPDATE/DELETE statements can be applied correctly.
+Tracked tables currently need primary keys, and the destination must contain
+matching primary-key constraints. Keep PostgreSQL's default replica identity for
+these tables: Prismio uses the primary-key identity sent by `pgoutput` to apply
+INSERT upserts and target the correct rows for UPDATE/DELETE. `REPLICA IDENTITY
+FULL` is not currently supported because it marks every column as replica
+identity rather than identifying only the conflict key.
+
+On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables.
 
 ### 3. First run — create an account
 
@@ -187,6 +190,57 @@ The following settings control the automatic tuning behavior. They are intended 
 | Maximum Batch Timeout | Upper bound for the automatically calculated batch timeout. Default: `5,000 ms`. |
 | Timeout Margin Factor | Safety multiplier applied to the estimated time needed to fill a batch. Default: `1.3`. |
 | Idle Stale Factor | Number of tuner intervals without a flush before the system is treated as idle. Default: `2`. |
+
+### 8. Run the local data-integrity test
+
+The integration tests start two disposable PostgreSQL 16 containers and run
+Prismio's core directly without opening the TUI. They verify the exact target
+state after `INSERT`, `UPDATE`, and `DELETE`, including Unicode, `NULL`, numeric,
+boolean, and multiline text values. They also place a latency proxy in front of
+the target, wait until only part of a small burst has arrived, stop Prismio
+without its final shutdown checkpoint, and start it again from the periodic
+checkpoint. The restarted engine must converge on the complete source state
+without missing or duplicate rows. These are correctness tests, not load tests.
+
+Requirements:
+
+- Docker Desktop is installed and running.
+- Go is available as described above.
+
+From PowerShell in the repository root, run:
+
+```powershell
+.\scripts\test-integration.ps1
+```
+
+The script uses `localhost:15432` for the source and `localhost:15433` for the
+target, so it does not conflict with a normal local PostgreSQL instance on port
+`5432`. It creates clean databases, runs the test, prints a clear pass/fail
+result, and removes the containers and their volumes afterward.
+
+To keep the containers running for inspection after the test:
+
+```powershell
+.\scripts\test-integration.ps1 -KeepContainers
+```
+
+When containers are already running, the Go test can also be invoked directly:
+
+```powershell
+go test -tags=integration ./tests/integration/... -v -count=1 -timeout=60s
+```
+
+Custom endpoints can be supplied with `TEST_SOURCE_DB_URL`,
+`TEST_TARGET_DB_URL`, `TEST_LAGGED_TARGET_DB_URL`, and
+`TEST_TOXIPROXY_API_URL`. The test adds its own replication slot and publication
+parameters to the source URL. The latency proxy is provided by the pinned
+`ghcr.io/shopify/toxiproxy:2.12.0` test container.
+
+The same suite runs automatically in GitHub Actions on every push and pull
+request through `.github/workflows/ci.yml`. It can also be started manually from
+the repository's **Actions → CI → Run workflow** screen. A failed Go assertion
+marks the workflow as failed, and the workflow prints the PostgreSQL and
+Toxiproxy logs before cleaning up the containers.
 
 ---
 
