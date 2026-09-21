@@ -37,6 +37,21 @@ services:
       timeout: 3s
       retries: 20
 
+  sqlserver-target:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: "Prismio_Test_2026!"
+    ports:
+      - "127.0.0.1:11433:1433"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q 'SELECT 1' -o /dev/null"]
+      start_period: 20s
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.12.0
     depends_on:
@@ -45,3 +60,4 @@ services:
     ports:
       - "127.0.0.1:8474:8474"
       - "127.0.0.1:15434:8666"
+      - "127.0.0.1:11434:8667"

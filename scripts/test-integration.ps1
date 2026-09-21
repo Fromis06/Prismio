@@ -18,11 +18,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 try {
-    docker compose -f $composeFile up -d --wait
+    $containersStarted = $true
+    docker compose -f $composeFile up -d --wait --wait-timeout 180
     if ($LASTEXITCODE -ne 0) {
+        docker compose -f $composeFile logs
         throw "Could not start the integration-test databases."
     }
-    $containersStarted = $true
 
     if (-not $sourceURLWasSet) {
         $env:TEST_SOURCE_DB_URL = "postgres://postgres:password@localhost:15432/sourcedb?sslmode=disable"
@@ -34,9 +35,9 @@ try {
         $env:GOCACHE = Join-Path $PSScriptRoot "..\.tmp-go-cache"
     }
 
-    go test -tags=integration ./tests/integration/... -v -count=1 -timeout=60s
+    go test -tags=integration ./tests/integration/... -v -count=1 -timeout=180s
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "`nIntegration test failed. PostgreSQL logs:" -ForegroundColor Red
+        Write-Host "`nIntegration test failed. Database and proxy logs:" -ForegroundColor Red
         docker compose -f $composeFile logs
         throw "Integration test failed."
     }

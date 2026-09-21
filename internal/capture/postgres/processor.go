@@ -8,6 +8,7 @@ import (
 	"my-cdc/internal/sinks"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // sourceTypeName matches this driver's config and registry name.
@@ -163,7 +164,21 @@ func (p *Processor) decodeTupleToMap(rel *pglogrepl.RelationMessage, tuple *pglo
 			continue
 
 		case 't', 'b': // Text or binary payload.
-			// pgoutput is text by default; type casting can come later.
+			// Preserve booleans using the column type, not the string contents:
+			// SQL Server BIT does not accept pgoutput's text "t"/"f" values.
+			// A TEXT column containing "t" or "f" must remain text.
+			if colMeta.DataType == pgtype.BoolOID {
+				format := int16(pgtype.TextFormatCode)
+				if colData.DataType == 'b' {
+					format = pgtype.BinaryFormatCode
+				}
+				value, err := (pgtype.BoolCodec{}).DecodeValue(nil, colMeta.DataType, format, colData.Data)
+				if err == nil {
+					result[colName] = value
+					continue
+				}
+			}
+			// Other pgoutput values remain text for destination-side casting.
 			result[colName] = string(colData.Data)
 		}
 	}

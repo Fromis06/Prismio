@@ -300,6 +300,11 @@ func envOrDefault(name, fallback string) string {
 
 func configureTargetLatency(t *testing.T, ctx context.Context, apiURL string, latency time.Duration) {
 	t.Helper()
+	configureDatabaseLatency(t, ctx, apiURL, "prismio_target", "0.0.0.0:8666", "postgres-target:5432", latency)
+}
+
+func configureDatabaseLatency(t *testing.T, ctx context.Context, apiURL, name, listen, upstream string, latency time.Duration) {
+	t.Helper()
 	client := &http.Client{Timeout: 2 * time.Second}
 	baseURL := strings.TrimRight(apiURL, "/")
 	deadline := time.Now().Add(testTimeout)
@@ -324,14 +329,15 @@ func configureTargetLatency(t *testing.T, ctx context.Context, apiURL string, la
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	toxiproxyRequest(t, ctx, client, http.MethodDelete, baseURL+"/proxies/prismio_target", nil, true)
+	proxyURL := baseURL + "/proxies/" + name
+	toxiproxyRequest(t, ctx, client, http.MethodDelete, proxyURL, nil, true)
 	toxiproxyRequest(t, ctx, client, http.MethodPost, baseURL+"/proxies", map[string]any{
-		"name":     "prismio_target",
-		"listen":   "0.0.0.0:8666",
-		"upstream": "postgres-target:5432",
+		"name":     name,
+		"listen":   listen,
+		"upstream": upstream,
 		"enabled":  true,
 	}, false)
-	toxiproxyRequest(t, ctx, client, http.MethodPost, baseURL+"/proxies/prismio_target/toxics", map[string]any{
+	toxiproxyRequest(t, ctx, client, http.MethodPost, proxyURL+"/toxics", map[string]any{
 		"name":     "target_response_latency",
 		"type":     "latency",
 		"stream":   "downstream",
@@ -437,6 +443,24 @@ func openPool(t *testing.T, ctx context.Context, connectionURL, label string) *p
 
 func prepareDatabases(t *testing.T, ctx context.Context, sourceDB, targetDB *pgxpool.Pool) {
 	t.Helper()
+	prepareSourceDatabase(t, ctx, sourceDB)
+	if _, err := targetDB.Exec(ctx, `
+		DROP TABLE IF EXISTS prismio_integrity_records;
+		CREATE TABLE prismio_integrity_records (
+			id BIGINT PRIMARY KEY,
+			name TEXT NOT NULL,
+			email TEXT NULL,
+			quantity INTEGER NOT NULL,
+			active BOOLEAN NOT NULL,
+			note TEXT NOT NULL
+		);
+	`); err != nil {
+		t.Fatalf("prepare target database: %v", err)
+	}
+}
+
+func prepareSourceDatabase(t *testing.T, ctx context.Context, sourceDB *pgxpool.Pool) {
+	t.Helper()
 
 	if _, err := sourceDB.Exec(ctx, `
 		DO $$
@@ -459,20 +483,6 @@ func prepareDatabases(t *testing.T, ctx context.Context, sourceDB, targetDB *pgx
 		CREATE PUBLICATION prismio_integrity_pub FOR TABLE prismio_integrity_records;
 	`); err != nil {
 		t.Fatalf("prepare source database: %v", err)
-	}
-
-	if _, err := targetDB.Exec(ctx, `
-		DROP TABLE IF EXISTS prismio_integrity_records;
-		CREATE TABLE prismio_integrity_records (
-			id BIGINT PRIMARY KEY,
-			name TEXT NOT NULL,
-			email TEXT NULL,
-			quantity INTEGER NOT NULL,
-			active BOOLEAN NOT NULL,
-			note TEXT NOT NULL
-		);
-	`); err != nil {
-		t.Fatalf("prepare target database: %v", err)
 	}
 }
 

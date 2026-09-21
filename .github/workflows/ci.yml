@@ -10,9 +10,9 @@ permissions:
 
 jobs:
   test:
-    name: Build and data-safety tests
+    name: PostgreSQL and SQL Server data-safety tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Check out repository
@@ -24,14 +24,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Compile and run package tests
-        run: go test ./...
+      - name: Static analysis
+        run: go vet ./...
+
+      - name: Compile and run package tests with race detection
+        run: go test -race -count=1 ./...
 
       - name: Start integration-test services
-        run: docker compose -f compose.integration.yml up -d --wait
+        run: docker compose -f compose.integration.yml up -d --wait --wait-timeout 180
 
-      - name: Run data-integrity and crash-recovery tests
-        run: go test -tags=integration ./tests/integration/... -v -count=1 -timeout=60s
+      - name: Run PostgreSQL and SQL Server integrity, rollback and recovery tests
+        run: go test -race -tags=integration ./tests/integration/... -v -count=1 -timeout=180s
 
       - name: Show service logs on failure
         if: failure()
