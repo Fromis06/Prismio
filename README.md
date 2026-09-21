@@ -61,7 +61,7 @@ To achieve high resilience without heavy cluster dependencies, a proprietary ove
 - **Core Engine:** Golang (leveraging native Go concurrency primitives)
 - **Source Database:** PostgreSQL (logical replication via `pglogrepl`)
 - **Interface:** Terminal UI (`tview`)
-- **Database drivers:** PostgreSQL is currently supported for both CDC sources and destinations. Additional drivers can be added in the future through the driver registry.
+- **Database drivers:** PostgreSQL is supported as a CDC source and destination; SQL Server is also supported as a destination.
 
 ---
 
@@ -119,7 +119,7 @@ INSERT upserts and target the correct rows for UPDATE/DELETE. `REPLICA IDENTITY
 FULL` is not currently supported because it marks every column as replica
 identity rather than identifying only the conflict key.
 
-On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables.
+On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables. SQL Server destinations must expose matching table and primary-key names through the connecting user's default schema.
 
 ### 3. First run — create an account
 
@@ -142,7 +142,11 @@ After logging in, you'll land on the configuration screen:
    ```
 
 2. Click the source's connection-check action row — it must show OK (green) before you can run.
-3. **Add a new destination**: select a sink type, fill in the destination URL, then click its connection-check action row.
+3. **Add a new destination**: select PostgreSQL or SQL Server, fill in the destination URL, then click its connection-check action row. SQL Server URLs use the form:
+
+   ```
+   sqlserver://user:password@host:1433?database=dbname
+   ```
 4. Repeat step 3 to add as many destinations as needed.
 5. Once every check row shows OK, click **Run CDC** to start the pipeline.
 
@@ -193,14 +197,19 @@ The following settings control the automatic tuning behavior. They are intended 
 
 ### 8. Run the local data-integrity test
 
-The integration tests start two disposable PostgreSQL 16 containers and run
-Prismio's core directly without opening the TUI. They verify the exact target
+The integration tests start two disposable PostgreSQL 16 containers, a SQL
+Server 2022 Developer container, and a latency proxy. They run Prismio's core
+directly without opening the TUI and verify the exact target
 state after `INSERT`, `UPDATE`, and `DELETE`, including Unicode, `NULL`, numeric,
 boolean, and multiline text values. They also place a latency proxy in front of
 the target, wait until only part of a small burst has arrived, stop Prismio
 without its final shutdown checkpoint, and start it again from the periodic
 checkpoint. The restarted engine must converge on the complete source state
-without missing or duplicate rows. These are correctness tests, not load tests.
+without missing or duplicate rows for both PostgreSQL and SQL Server destinations.
+SQL Server tests also verify primary-key changes, exact large BIGINT values,
+composite-key and key-only upserts, escaped identifiers, and complete batch
+rollback on error followed by a successful retry. These are correctness tests,
+not load tests.
 
 Requirements:
 
@@ -213,9 +222,11 @@ From PowerShell in the repository root, run:
 .\scripts\test-integration.ps1
 ```
 
-The script uses `localhost:15432` for the source and `localhost:15433` for the
-target, so it does not conflict with a normal local PostgreSQL instance on port
-`5432`. It creates clean databases, runs the test, prints a clear pass/fail
+The script uses `localhost:15432` for the source, `localhost:15433` for the
+PostgreSQL target, and `localhost:11433` for SQL Server. The latency proxy uses
+`15434` and `11434` for the respective targets. SQL Server tests use `tempdb`
+with the disposable credentials in `compose.integration.yml`. The script
+prepares test tables, runs the tests, prints a clear pass/fail
 result, and removes the containers and their volumes afterward.
 
 To keep the containers running for inspection after the test:
@@ -227,20 +238,24 @@ To keep the containers running for inspection after the test:
 When containers are already running, the Go test can also be invoked directly:
 
 ```powershell
-go test -tags=integration ./tests/integration/... -v -count=1 -timeout=60s
+go test -tags=integration ./tests/integration/... -v -count=1 -timeout=180s
 ```
 
 Custom endpoints can be supplied with `TEST_SOURCE_DB_URL`,
-`TEST_TARGET_DB_URL`, `TEST_LAGGED_TARGET_DB_URL`, and
-`TEST_TOXIPROXY_API_URL`. The test adds its own replication slot and publication
+`TEST_TARGET_DB_URL`, `TEST_LAGGED_TARGET_DB_URL`, `TEST_SQLSERVER_DB_URL`,
+`TEST_LAGGED_SQLSERVER_DB_URL`, and `TEST_TOXIPROXY_API_URL`.
+Use disposable databases only: setup drops and recreates the `prismio_*` test
+tables, publication and replication slot. The test adds its own slot and publication
 parameters to the source URL. The latency proxy is provided by the pinned
 `ghcr.io/shopify/toxiproxy:2.12.0` test container.
 
 The same suite runs automatically in GitHub Actions on every push and pull
-request through `.github/workflows/ci.yml`. It can also be started manually from
+request through `.github/workflows/ci.yml`, along with `go vet` and package
+tests. Both package and integration tests enable Go's race detector on Linux.
+It can also be started manually from
 the repository's **Actions → CI → Run workflow** screen. A failed Go assertion
-marks the workflow as failed, and the workflow prints the PostgreSQL and
-Toxiproxy logs before cleaning up the containers.
+marks the workflow as failed, and the workflow prints the PostgreSQL, SQL Server
+and Toxiproxy logs before cleaning up the containers.
 
 ---
 
