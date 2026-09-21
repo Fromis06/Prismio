@@ -61,7 +61,7 @@ To achieve high resilience without heavy cluster dependencies, a proprietary ove
 - **Core Engine:** Golang (leveraging native Go concurrency primitives)
 - **Source Database:** PostgreSQL (logical replication via `pglogrepl`)
 - **Interface:** Terminal UI (`tview`)
-- **Database drivers:** PostgreSQL is currently supported for both CDC sources and destinations. Additional drivers can be added in the future through the driver registry.
+- **Database drivers:** PostgreSQL is supported as a CDC source and destination; SQL Server is also supported as a destination.
 
 ---
 
@@ -119,7 +119,7 @@ INSERT upserts and target the correct rows for UPDATE/DELETE. `REPLICA IDENTITY
 FULL` is not currently supported because it marks every column as replica
 identity rather than identifying only the conflict key.
 
-On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables.
+On the destination side, the target tables must already exist. Prismio only writes data; it does not create destination schemas or tables. SQL Server destinations must expose matching table and primary-key names through the connecting user's default schema.
 
 ### 3. First run — create an account
 
@@ -142,7 +142,11 @@ After logging in, you'll land on the configuration screen:
    ```
 
 2. Click the source's connection-check action row — it must show OK (green) before you can run.
-3. **Add a new destination**: select a sink type, fill in the destination URL, then click its connection-check action row.
+3. **Add a new destination**: select PostgreSQL or SQL Server, fill in the destination URL, then click its connection-check action row. SQL Server URLs use the form:
+
+   ```
+   sqlserver://user:password@host:1433?database=dbname
+   ```
 4. Repeat step 3 to add as many destinations as needed.
 5. Once every check row shows OK, click **Run CDC** to start the pipeline.
 
